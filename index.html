@@ -3,102 +3,86 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Meeting Partner - Web Edition (Diff搭載)</title>
-<!-- 画像から文字を抽出するAIライブラリ (Tesseract.js) -->
+<title>AI Meeting Partner - Ultimate Edition</title>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
     :root { --primary: #2c3e50; --accent: #8e44ad; --bg: #f4f7f6; --success: #27ae60; --danger: #e74c3c; }
     body { font-family: 'Helvetica Neue', Arial, sans-serif; background: var(--bg); color: var(--primary); padding: 15px; margin: 0; }
-    .container { max-width: 600px; margin: auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.05); }
-    h2 { font-size: 1.4em; border-left: 5px solid var(--accent); padding-left: 10px; margin-top: 0; }
+    .container { max-width: 700px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+    h2 { font-size: 1.5em; border-left: 6px solid var(--accent); padding-left: 12px; margin-top: 0; color: var(--primary); }
     
-    .config-panel { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-size: 0.9em; }
-    .config-group { margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
-    input[type="password"] { width: 60%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
-    select { padding: 8px; border-radius: 4px; border: 1px solid #ccc; background: white; }
+    .config-panel { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #eee; }
+    .config-group { margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+    input[type="password"] { width: 65%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 1em; }
+    select { padding: 10px; border-radius: 6px; border: 1px solid #ccc; background: white; cursor: pointer; }
     
-    .controls { display: flex; gap: 10px; margin-bottom: 15px; }
-    button { flex: 1; padding: 15px; font-size: 1.1em; border: none; border-radius: 8px; color: white; cursor: pointer; font-weight: bold; transition: 0.2s; }
-    #startBtn { background: var(--accent); }
+    .controls { display: flex; gap: 12px; margin-bottom: 20px; }
+    button { flex: 1; padding: 18px; font-size: 1.1em; border: none; border-radius: 10px; color: white; cursor: pointer; font-weight: bold; transition: all 0.3s ease; }
+    #startBtn { background: var(--accent); box-shadow: 0 4px 15px rgba(142, 68, 173, 0.3); }
     #stopBtn { background: var(--danger); display: none; }
-    button:active { transform: scale(0.98); }
+    button:hover { opacity: 0.9; transform: translateY(-1px); }
     
-    .status-bar { font-size: 0.9em; margin-bottom: 15px; font-weight: bold; color: #7f8c8d; display: flex; align-items: center; gap: 5px; }
-    .recording-indicator { width: 12px; height: 12px; background: var(--danger); border-radius: 50%; animation: blink 1s infinite; opacity: 0; }
-    @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }
+    .status-bar { font-size: 0.95em; margin-bottom: 20px; font-weight: bold; color: #555; display: flex; align-items: center; gap: 8px; padding: 10px; background: #fffbe6; border-radius: 6px; border: 1px solid #ffe58f; }
+    .recording-indicator { width: 14px; height: 14px; background: var(--danger); border-radius: 50%; animation: blink 1.2s infinite; opacity: 0; }
+    @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
 
-    .box-title { font-size: 1em; font-weight: bold; margin: 20px 0 10px 0; color: var(--primary); display: flex; justify-content: space-between; align-items: center; }
+    #preview-container { text-align: center; margin-bottom: 20px; }
+    #screenVideo { width: 100%; max-height: 200px; background: #000; border-radius: 8px; border: 3px solid #333; }
     
-    #preview-container { text-align: center; margin-bottom: 10px; display: none; }
-    #screenVideo { max-width: 100%; height: auto; border: 2px solid #bdc3c7; border-radius: 8px; max-height: 150px; }
+    .box-title { font-size: 1.1em; font-weight: bold; margin-bottom: 10px; color: var(--primary); display: flex; align-items: center; gap: 5px; }
+    #transcript-area { height: 180px; overflow-y: auto; background: #1e272e; padding: 15px; border-radius: 8px; font-size: 0.9em; line-height: 1.7; color: #ecf0f1; border: 1px solid #34495e; white-space: pre-wrap; margin-bottom: 25px; }
     
-    #transcript-wrapper { display: block; }
-    #transcript-area { height: 150px; overflow-y: auto; background: #fff; padding: 15px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 0.85em; line-height: 1.6; color: #555; white-space: pre-wrap; }
-    
-    #insights-area { display: flex; flex-direction: column; gap: 15px; }
-    .insight-card { background: #fbf5ff; padding: 15px; border-left: 4px solid var(--accent); border-radius: 8px; font-size: 0.95em; line-height: 1.6; box-shadow: 0 2px 5px rgba(0,0,0,0.05); animation: fadeIn 0.5s ease-in-out; }
-    .insight-time { font-size: 0.8em; color: #7f8c8d; margin-bottom: 5px; font-weight: bold; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
-
+    .insight-card { background: #fbf5ff; padding: 20px; border-left: 5px solid var(--accent); border-radius: 8px; font-size: 1em; line-height: 1.8; box-shadow: 0 4px 10px rgba(0,0,0,0.05); margin-bottom: 20px; animation: slideIn 0.4s ease-out; }
+    .insight-time { font-size: 0.85em; color: #8e44ad; font-weight: bold; margin-bottom: 10px; border-bottom: 1px solid #e8daef; display: inline-block; }
+    @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
 </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>AI Meeting Partner (差分OCR版)</h2>
+    <h2>AI Meeting Partner (完成版)</h2>
     
     <div class="config-panel">
         <div class="config-group">
-            <label>APIキー:</label>
+            <label>API Key:</label>
             <input type="password" id="apiKey" placeholder="AIzaSy...">
         </div>
         <div class="config-group">
             <label>分析間隔:</label>
-            <select id="intervalSelect" onchange="updateInterval()">
-                <option value="1">1分ごと</option>
+            <select id="intervalSelect">
+                <option value="1" selected>1分ごと</option>
                 <option value="3">3分ごと</option>
-                <option value="5" selected>5分ごと</option>
-            </select>
-        </div>
-        <div class="config-group">
-            <label>表示モード:</label>
-            <select id="modeSelect" onchange="toggleMode()">
-                <option value="full">全表示（プレビュー＋生テキスト）</option>
-                <option value="insights">分析結果のみ（リスト形式）</option>
+                <option value="5">5分ごと</option>
             </select>
         </div>
     </div>
 
     <div class="controls">
         <button id="startBtn" onclick="startMeeting()">画面キャプチャ開始</button>
-        <button id="stopBtn" onclick="stopMeeting()">終了</button>
+        <button id="stopBtn" onclick="stopMeeting()">会議終了</button>
     </div>
 
     <div class="status-bar">
         <div class="recording-indicator" id="recIcon"></div>
-        <span id="statusText">待機中... (Tesseract.js 準備完了)</span>
+        <span id="statusText">待機中 (準備OK)</span>
     </div>
 
     <div id="preview-container">
-        <div style="font-size: 0.8em; color: #7f8c8d; margin-bottom: 5px;">👀 現在読み取っている画面</div>
+        <div class="box-title">🎥 プレビュー (Teamsウィンドウを選択してください)</div>
         <video id="screenVideo" autoplay muted></video>
         <canvas id="captureCanvas" style="display:none;"></canvas>
     </div>
 
-    <div id="transcript-wrapper">
-        <div class="box-title">📝 抽出された新規テキスト (差分のみ)</div>
-        <div id="transcript-area">ここに重複を除外した新しい字幕テキストだけが蓄積されます...</div>
-    </div>
+    <div class="box-title">📝 リアルタイム抽出テキスト</div>
+    <div id="transcript-area">ここに新しい発言が蓄積されます。
+最初は「メモ帳」などを大きく映してテストしてください。</div>
 
-    <div class="box-title">💡 論点と質問タイムライン</div>
-    <div id="insights-area">
-        <div class="insight-card" style="background: #f8f9fa; border-left-color: #bdc3c7;">
-            <div>ブラウザのダイアログで「ウィンドウ」または「画面全体」を選んで共有を開始してください。<br>システムが自動で前回の画像との文字の差分を計算し、新しい発言だけを拾い続けます。</div>
-        </div>
-    </div>
+    <div class="box-title">💡 戦略コンサルタントの論点分析</div>
+    <div id="insights-area"></div>
 </div>
 
 <script>
+    // 保存されたキーを復元
     window.onload = () => {
         const savedKey = localStorage.getItem('geminiApiKey');
         if (savedKey) document.getElementById('apiKey').value = savedKey;
@@ -107,28 +91,10 @@
     let screenStream;
     let isRecording = false;
     let fullTranscript = "";
-    let lastOcrText = ""; // 【追加】前回のOCR結果を保存する変数
+    let lastOcrText = "";
     let analysisIntervalTimer;
     let ocrIntervalTimer;
     let isProcessingOCR = false;
-
-    function toggleMode() {
-        const mode = document.getElementById('modeSelect').value;
-        document.getElementById('transcript-wrapper').style.display = (mode === 'insights') ? 'none' : 'block';
-        document.getElementById('preview-container').style.display = (mode === 'insights') ? 'none' : 'block';
-    }
-
-    function updateInterval() {
-        if (isRecording) {
-            clearInterval(analysisIntervalTimer);
-            startAnalysisTimer();
-        }
-    }
-
-    function startAnalysisTimer() {
-        const minutes = parseInt(document.getElementById('intervalSelect').value);
-        analysisIntervalTimer = setInterval(analyzeConversation, minutes * 60 * 1000);
-    }
 
     async function startMeeting() {
         const apiKey = document.getElementById('apiKey').value.trim();
@@ -136,13 +102,14 @@
         localStorage.setItem('geminiApiKey', apiKey);
 
         try {
-            // ここでブラウザが「ウィンドウ」か「画面全体」かを聞いてきます
-            screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+            // ウィンドウ選択ダイアログを表示
+            screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: "always" }, audio: false });
             const video = document.getElementById('screenVideo');
             video.srcObject = screenStream;
 
+            // 初期化
             fullTranscript = "";
-            lastOcrText = ""; // 状態をリセット
+            lastOcrText = "";
             document.getElementById('transcript-area').innerText = "";
             document.getElementById('insights-area').innerHTML = ""; 
             
@@ -150,17 +117,18 @@
             document.getElementById('startBtn').style.display = "none";
             document.getElementById('stopBtn').style.display = "block";
             document.getElementById('recIcon').style.opacity = "1";
-            document.getElementById('preview-container').style.display = "block";
-            document.getElementById('statusText').innerText = "字幕をスキャン中...";
+            document.getElementById('statusText').innerText = "OCR実行中...";
 
+            // 5秒おきにスキャン、設定時間おきにGemini分析
             ocrIntervalTimer = setInterval(captureAndOCR, 5000);
-            startAnalysisTimer();
+            const minutes = parseInt(document.getElementById('intervalSelect').value);
+            analysisIntervalTimer = setInterval(analyzeConversation, minutes * 60 * 1000);
 
             screenStream.getVideoTracks()[0].onended = () => stopMeeting();
 
         } catch (error) {
-            console.error("画面共有エラー:", error);
-            alert("画面共有がキャンセルされたか、許可されませんでした。");
+            console.error(error);
+            alert("画面共有がキャンセルされました。");
         }
     }
 
@@ -168,39 +136,28 @@
         isRecording = false;
         clearInterval(analysisIntervalTimer);
         clearInterval(ocrIntervalTimer);
-        
-        if (screenStream) {
-            screenStream.getTracks().forEach(track => track.stop());
-        }
-        
+        if (screenStream) screenStream.getTracks().forEach(t => t.stop());
         document.getElementById('startBtn').style.display = "block";
         document.getElementById('stopBtn').style.display = "none";
         document.getElementById('recIcon').style.opacity = "0";
-        document.getElementById('statusText').innerText = "終了しました";
+        document.getElementById('statusText').innerText = "終了しました。";
     }
 
-    // 【新規】テキストの差分（新しく追加された部分）だけを抽出するロジック
+    // 差分抽出ロジック：前回と違う文字が少しでもあれば採用
     function extractDiff(oldText, newText) {
-        if (!oldText) return newText;
+        if (!newText || newText.length < 3) return "";
+        if (oldText.trim() === newText.trim()) return "";
         
-        // OCRの文字揺れを考慮し、「句読点や空白」でテキストを大まかなブロック（行や文）に分割します
-        const oldChunks = oldText.split(/(?<=[。！？\n\s])/).map(s => s.trim()).filter(s => s.length > 2);
-        const newChunks = newText.split(/(?<=[。！？\n\s])/).map(s => s.trim()).filter(s => s.length > 2);
-        
-        let diffText = "";
-        
-        for (const chunk of newChunks) {
-            // 新しい塊が、過去のテキストに「含まれていない」場合のみ新規発言として採用
-            const isAlreadyCaptured = oldChunks.some(oldChunk => oldChunk.includes(chunk) || chunk.includes(oldChunk));
-            if (!isAlreadyCaptured) {
-                diffText += chunk + " ";
-            }
+        // OCR特有の重複を避けるため、新しい文字列が過去の末尾に含まれていなければ採用
+        if (oldText.length > 20) {
+            const tail = oldText.slice(-15);
+            if (newText.includes(tail)) return "";
         }
-        return diffText.trim();
+        return newText;
     }
 
     async function captureAndOCR() {
-        if (isProcessingOCR) return;
+        if (isProcessingOCR || !isRecording) return;
         isProcessingOCR = true;
 
         const video = document.getElementById('screenVideo');
@@ -213,53 +170,45 @@
 
         try {
             const result = await Tesseract.recognize(canvas, 'jpn');
-            const currentOcrText = result.data.text.replace(/\s+/g, ' ').trim();
+            const currentText = result.data.text.replace(/\s+/g, '').trim();
 
-            if (currentOcrText.length > 5) {
-                // 前回スクショしたテキストとの差分を計算
-                const newText = extractDiff(lastOcrText, currentOcrText);
-                
-                if (newText.length > 0) {
-                    fullTranscript += newText + "\n";
-                    
-                    const tArea = document.getElementById('transcript-area');
-                    tArea.innerText = fullTranscript;
-                    tArea.scrollTop = tArea.scrollHeight; 
+            if (currentText) {
+                const diff = extractDiff(lastOcrText, currentText);
+                if (diff) {
+                    fullTranscript += diff + " ";
+                    const area = document.getElementById('transcript-area');
+                    area.innerText = fullTranscript;
+                    area.scrollTop = area.scrollHeight; // 自動スクロール
+                    lastOcrText = currentText;
                 }
-                // 次の比較のために、今回のテキストを記憶しておく
-                lastOcrText = currentOcrText;
             }
-        } catch (error) {
-            console.error("OCR処理エラー:", error);
+        } catch (e) {
+            console.error("OCR Error:", e);
         } finally {
             isProcessingOCR = false;
         }
     }
 
     async function analyzeConversation() {
-        if (fullTranscript.trim() === "") return;
+        if (fullTranscript.length < 20) return; // 文字が少ない時は飛ばす
 
-        const apiKey = document.getElementById('apiKey').value.trim();
-        document.getElementById('statusText').innerText = "Geminiがインサイトを生成中...";
+        const apiKey = document.getElementById('apiKey').value;
+        document.getElementById('statusText').innerText = "Gemini分析中...";
         
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`;
         
         const prompt = `
-        あなたはトップティアの戦略コンサルタントです。
-        以下のデータは、Web会議の字幕を自動撮影し、差分抽出ロジックを通したテキストです。
-        一部にOCRの誤字や文脈の断絶が含まれている可能性があります。
-
-        これらの情報を整理し、直近の議論の本質を以下のフォーマットで構造化して出力してください。
+        あなたはEYなどのトップティアに所属する戦略コンサルタントです。
+        以下のテキストは会議の字幕をOCRで読み取った生データです。
+        ノイズを除去し、議論を構造化して以下の形式で出力してください。
 
         1. 【現状の主要アジェンダ】
-           - 直近で議論されている課題をロジックツリーのように簡潔に整理（2〜3点）
-        
-        2. 【戦略的リスクと問い】
-           - プロジェクトの目的（North Star Metric）から逆算し、現状の議論で見落とされているリスクを指摘した上で、意思決定を促す鋭い質問を1つ提示
+           - 議論の核となる課題を2〜3点に整理
+        2. 【コンサル視点の鋭い問い】
+           - North Star Metricから逆算し、意思決定を加速させるための質問を1つ提示
 
-        [抽出テキストデータ]
-        ${fullTranscript}
-        `;
+        データ：
+        ${fullTranscript}`;
 
         try {
             const response = await fetch(url, {
@@ -269,32 +218,22 @@
             });
 
             const data = await response.json();
-            const insights = data.candidates[0].content.parts[0].text;
+            const text = data.candidates[0].content.parts[0].text;
             
-            const now = new Date();
-            const timeString = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-
-            const newCard = document.createElement('div');
-            newCard.className = 'insight-card';
-            newCard.innerHTML = `
-                <div class="insight-time">🕒 ${timeString} の分析</div>
-                <div style="white-space: pre-wrap;">${insights}</div>
-            `;
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const card = document.createElement('div');
+            card.className = 'insight-card';
+            card.innerHTML = `<div class="insight-time">🕒 ${time} 分析実行</div><div>${text.replace(/\n/g, '<br>')}</div>`;
             
-            const insightsArea = document.getElementById('insights-area');
-            insightsArea.insertBefore(newCard, insightsArea.firstChild); 
+            const area = document.getElementById('insights-area');
+            area.insertBefore(card, area.firstChild);
+            document.getElementById('statusText').innerText = "OCR実行中...";
 
-            document.getElementById('statusText').innerText = "字幕をスキャン中...";
-
-            // 必要に応じてここで fullTranscript をリセットし、メモリを節約することも可能です
-            // fullTranscript = ""; 
-
-        } catch (error) {
-            console.error(error);
-            document.getElementById('statusText').innerText = "分析エラー（再試行します）";
+        } catch (e) {
+            console.error(e);
+            document.getElementById('statusText').innerText = "APIエラー";
         }
     }
 </script>
-
 </body>
 </html>
