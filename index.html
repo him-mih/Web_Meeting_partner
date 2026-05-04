@@ -219,8 +219,13 @@
         const apiKey = document.getElementById('apiKey').value.trim();
         document.getElementById('statusText').innerText = "Gemini分析中...";
         
-        // 【修正完了】確実に動作する Gemini 1.5 Pro の v1beta エンドポイントを指定
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`;
+        // 【超強力版】複数のAPIエンドポイントを順番に試し、繋がるものを探す
+        const endpoints = [
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+            `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`
+        ];
         
         const promptData = {
             contents: [{
@@ -230,34 +235,58 @@
             }]
         };
 
-        try {
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(promptData)
-            });
+        let success = false;
+        let lastErrorMsg = "";
 
-            if (!response.ok) {
-                const err = await response.json();
-                console.error("API Error Detail:", err);
-                throw new Error("API通信エラー");
+        // エンドポイントを順番にアタック
+        for (const url of endpoints) {
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(promptData)
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    lastErrorMsg = err.error ? err.error.message : JSON.stringify(err);
+                    console.warn("API Error with URL:", url, lastErrorMsg);
+                    continue; // 失敗したら次のURLへ
+                }
+
+                const data = await response.json();
+                const text = data.candidates[0].content.parts[0].text;
+                
+                const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const card = document.createElement('div');
+                card.className = 'insight-card';
+                card.dataset.rawText = `[${time}]\n${text}`; 
+                card.innerHTML = `<div class="insight-time">🕒 ${time} 分析実行</div><div>${text.replace(/\n/g, '<br>')}</div>`;
+                
+                const area = document.getElementById('insights-area');
+                area.insertBefore(card, area.firstChild);
+                document.getElementById('statusText').innerText = "実行中...";
+                success = true;
+                break; // 成功したらループを抜ける
+
+            } catch (e) {
+                console.error("Fetch Exception:", e);
+                lastErrorMsg = e.message;
             }
+        }
 
-            const data = await response.json();
-            const text = data.candidates[0].content.parts[0].text;
-            
-            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            const card = document.createElement('div');
-            card.className = 'insight-card';
-            card.dataset.rawText = `[${time}]\n${text}`; 
-            card.innerHTML = `<div class="insight-time">🕒 ${time} 分析実行</div><div>${text.replace(/\n/g, '<br>')}</div>`;
-            
+        // すべてのエンドポイントが失敗した場合、画面にエラー理由を直接表示
+        if (!success) {
+            document.getElementById('statusText').innerText = "API通信失敗（詳細は画面下部）";
+            const errCard = document.createElement('div');
+            errCard.style.backgroundColor = "#ffebee";
+            errCard.style.color = "#c62828";
+            errCard.style.padding = "15px";
+            errCard.style.borderRadius = "8px";
+            errCard.style.marginBottom = "20px";
+            errCard.innerHTML = `<b>⚠️ Google APIからのエラーメッセージ:</b><br>${lastErrorMsg}<br><br><small>※この画面のスクリーンショットをお知らせください。</small>`;
             const area = document.getElementById('insights-area');
-            area.insertBefore(card, area.firstChild);
-            document.getElementById('statusText').innerText = "実行中...";
-        } catch (e) {
-            console.error("Fetch API Error:", e);
-            document.getElementById('statusText').innerText = "APIエラー（通信失敗）";
+            area.insertBefore(errCard, area.firstChild);
         }
     }
 
