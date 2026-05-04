@@ -8,12 +8,12 @@
 <style>
     :root { --primary: #2c3e50; --accent: #8e44ad; --bg: #f4f7f6; --success: #27ae60; --danger: #e74c3c; --info: #2980b9; }
     body { font-family: 'Helvetica Neue', Arial, sans-serif; background: var(--bg); color: var(--primary); padding: 15px; margin: 0; }
-    .container { max-width: 700px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+    .container { max-width: 750px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
     h2 { font-size: 1.5em; border-left: 6px solid var(--accent); padding-left: 12px; margin-top: 0; color: var(--primary); }
     
     .config-panel { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #eee; }
     .config-group { margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
-    input[type="password"] { width: 65%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 1em; }
+    input[type="password"] { width: 60%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 1em; }
     select { padding: 10px; border-radius: 6px; border: 1px solid #ccc; background: white; cursor: pointer; }
     
     .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -27,10 +27,11 @@
     .status-bar { font-size: 0.95em; margin-bottom: 20px; font-weight: bold; color: #555; display: flex; align-items: center; gap: 8px; padding: 10px; background: #fffbe6; border-radius: 6px; border: 1px solid #ffe58f; }
     .recording-indicator { width: 14px; height: 14px; background: var(--danger); border-radius: 50%; animation: blink 1.2s infinite; opacity: 0; }
     @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
-    #countdownText { margin-left: auto; color: var(--accent); font-family: monospace; font-size: 1.1em; }
+    
+    #timer-display { margin-left: auto; color: var(--accent); font-family: 'Courier New', Courier, monospace; font-size: 1.1em; }
 
     #preview-container { text-align: center; margin-bottom: 20px; }
-    #screenVideo { width: 100%; max-height: 200px; background: #000; border-radius: 8px; border: 3px solid #333; }
+    #screenVideo { width: 100%; max-height: 220px; background: #000; border-radius: 8px; border: 3px solid #333; }
     
     .box-title { font-size: 1.1em; font-weight: bold; margin-bottom: 10px; color: var(--primary); display: flex; align-items: center; gap: 5px; }
     #transcript-area { height: 180px; overflow-y: auto; background: #1e272e; padding: 15px; border-radius: 8px; font-size: 0.9em; line-height: 1.7; color: #ecf0f1; border: 1px solid #34495e; white-space: pre-wrap; margin-bottom: 25px; }
@@ -52,7 +53,7 @@
         </div>
         <div class="config-group">
             <label>分析間隔:</label>
-            <select id="intervalSelect" onchange="updateInterval()">
+            <select id="intervalSelect" onchange="resetTimer()">
                 <option value="10">10秒ごと</option>
                 <option value="30">30秒ごと</option>
                 <option value="60" selected>1分ごと</option>
@@ -71,9 +72,8 @@
 
     <div class="status-bar">
         <div class="recording-indicator" id="recIcon"></div>
-        <span id="statusText">OCRエンジンをダウンロード中...</span>
-        <!-- ここにカウントダウンタイマーが表示されます -->
-        <span id="countdownText"></span>
+        <span id="statusText">OCRエンジンの準備中...</span>
+        <span id="timer-display"></span>
     </div>
 
     <div id="preview-container">
@@ -96,12 +96,11 @@
     let fullTranscript = "";
     let lastOcrText = "";
     let ocrIntervalTimer;
-    let isProcessingOCR = false;
-    
-    // タイマー管理用変数
-    let countdownTimer = null;
+    let countdownTimer;
     let timeRemaining = 0;
+    let isProcessingOCR = false;
 
+    // 初期化: OCRワーカーを常駐させる
     window.onload = async () => {
         const savedKey = localStorage.getItem('geminiApiKey');
         if (savedKey) document.getElementById('apiKey').value = savedKey;
@@ -109,64 +108,37 @@
         try {
             worker = await Tesseract.createWorker('jpn');
             document.getElementById('statusText').innerText = "待機中 (準備OK)";
-            const startBtn = document.getElementById('startBtn');
-            startBtn.innerText = "画面キャプチャ開始";
-            startBtn.disabled = false;
-        } catch (error) {
-            console.error("OCRエンジンの起動失敗:", error);
-            document.getElementById('statusText').innerText = "OCRの準備に失敗しました。リロードしてください。";
+            const btn = document.getElementById('startBtn');
+            btn.innerText = "画面キャプチャ開始";
+            btn.disabled = false;
+        } catch (e) {
+            document.getElementById('statusText').innerText = "エラー: OCRエンジンの読み込みに失敗しました。";
         }
     };
 
-    // 途中で分析間隔を変更した時の処理
-    function updateInterval() {
+    function resetTimer() {
         if (isRecording) {
-            startAnalysisTimer();
+            timeRemaining = parseInt(document.getElementById('intervalSelect').value);
+            updateTimerDisplay();
         }
     }
 
-    // 分析タイマーの開始（1秒ごとのカウントダウン）
-    function startAnalysisTimer() {
-        clearInterval(countdownTimer);
-        const seconds = parseInt(document.getElementById('intervalSelect').value);
-        timeRemaining = seconds;
-        updateCountdownDisplay();
-
-        countdownTimer = setInterval(() => {
-            timeRemaining--;
-            if (timeRemaining <= 0) {
-                analyzeConversation();
-                // 分析を実行したらタイマーを元に戻す
-                timeRemaining = parseInt(document.getElementById('intervalSelect').value);
-            }
-            updateCountdownDisplay();
-        }, 1000);
-    }
-
-    // タイマーの画面表示更新
-    function updateCountdownDisplay() {
-        if (!isRecording) {
-            document.getElementById('countdownText').innerText = "";
-            return;
-        }
+    function updateTimerDisplay() {
+        const display = document.getElementById('timer-display');
+        if (!isRecording) { display.innerText = ""; return; }
         const m = Math.floor(timeRemaining / 60).toString().padStart(2, '0');
         const s = (timeRemaining % 60).toString().padStart(2, '0');
-        document.getElementById('countdownText').innerText = `次回の分析まで: ${m}:${s}`;
+        display.innerText = `次の分析まで: ${m}:${s}`;
     }
 
     async function startMeeting() {
         const apiKey = document.getElementById('apiKey').value.trim();
         if (!apiKey) { alert("APIキーを入力してください。"); return; }
-        
-        document.getElementById('apiKey').value = apiKey;
         localStorage.setItem('geminiApiKey', apiKey);
-
-        if (!worker) { alert("OCRエンジンの準備が完了していません。"); return; }
 
         try {
             screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: "always" }, audio: false });
-            const video = document.getElementById('screenVideo');
-            video.srcObject = screenStream;
+            document.getElementById('screenVideo').srcObject = screenStream;
 
             fullTranscript = "";
             lastOcrText = "";
@@ -177,32 +149,39 @@
             document.getElementById('startBtn').style.display = "none";
             document.getElementById('stopBtn').style.display = "block";
             document.getElementById('recIcon').style.opacity = "1";
-            document.getElementById('statusText').innerText = "OCR実行中...";
+            document.getElementById('statusText').innerText = "実行中...";
 
-            // OCRの実行ループ（5秒ごと）
+            // OCRの5秒おき実行
             ocrIntervalTimer = setInterval(captureAndOCR, 5000);
             
-            // カウントダウンタイマー開始
-            startAnalysisTimer();
+            // 分析カウントダウンタイマーの開始
+            timeRemaining = parseInt(document.getElementById('intervalSelect').value);
+            updateTimerDisplay();
+            countdownTimer = setInterval(() => {
+                timeRemaining--;
+                if (timeRemaining <= 0) {
+                    analyzeConversation();
+                    timeRemaining = parseInt(document.getElementById('intervalSelect').value);
+                }
+                updateTimerDisplay();
+            }, 1000);
 
             screenStream.getVideoTracks()[0].onended = () => stopMeeting();
-
-        } catch (error) {
-            console.error("画面共有エラー:", error);
-            alert("画面共有がキャンセルされました。");
+        } catch (e) {
+            alert("画面共有が許可されませんでした。");
         }
     }
 
     function stopMeeting() {
         isRecording = false;
-        clearInterval(countdownTimer);
         clearInterval(ocrIntervalTimer);
-        updateCountdownDisplay(); // タイマー表示を消す
+        clearInterval(countdownTimer);
         if (screenStream) screenStream.getTracks().forEach(t => t.stop());
         document.getElementById('startBtn').style.display = "block";
         document.getElementById('stopBtn').style.display = "none";
         document.getElementById('recIcon').style.opacity = "0";
         document.getElementById('statusText').innerText = "終了しました。";
+        updateTimerDisplay();
     }
 
     async function captureAndOCR() {
@@ -212,7 +191,6 @@
         const video = document.getElementById('screenVideo');
         const canvas = document.getElementById('captureCanvas');
         const ctx = canvas.getContext('2d');
-
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -221,16 +199,15 @@
             const result = await worker.recognize(canvas);
             const currentText = result.data.text.replace(/\s+/g, '').trim();
 
-            if (currentText.length > 10) {
-                if (lastOcrText !== currentText) {
-                    const headToVerify = currentText.substring(0, 20);
-                    if (!lastOcrText.includes(headToVerify)) {
-                        fullTranscript += currentText + "\n\n";
-                        const area = document.getElementById('transcript-area');
-                        area.innerText = fullTranscript;
-                        area.scrollTop = area.scrollHeight; 
-                        lastOcrText = currentText;
-                    }
+            if (currentText.length > 5 && currentText !== lastOcrText) {
+                // 前回と20文字以上被っていなければ追加
+                const head = currentText.substring(0, 15);
+                if (!lastOcrText.includes(head)) {
+                    fullTranscript += currentText + "\n\n";
+                    const area = document.getElementById('transcript-area');
+                    area.innerText = fullTranscript;
+                    area.scrollTop = area.scrollHeight;
+                    lastOcrText = currentText;
                 }
             }
         } catch (e) {
@@ -246,13 +223,13 @@
         const apiKey = document.getElementById('apiKey').value.trim();
         document.getElementById('statusText').innerText = "Gemini分析中...";
         
-        // 【修正完了】存在しないモデル名による404エラーを解消しました
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+        // 【修正版URL】v1安定版のURLを使用。モデル名の不一致を解消。
+        const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
         
         const promptData = {
             contents: [{
                 parts: [{
-                    text: `あなたはEYなどのトップティアに所属する戦略コンサルタントです。以下のデータは会議の字幕をOCRで読み取った生データです。重複やノイズを除去し、議論を構造化して以下の形式で出力してください。\n\n1. 【現状の主要アジェンダ】\n   - 議論の核となる課題を2〜3点に整理\n2. 【コンサル視点の鋭い問い】\n   - North Star Metricから逆算し、意思決定を加速させるための質問を1つ提示\n\nデータ：\n${fullTranscript}`
+                    text: `あなたはEYなどのトップティアに所属する戦略コンサルタントです。以下のデータは会議の字幕をOCRで読み取った生データです。議論を構造化して以下の形式で出力してください。\n\n1. 【現状の主要アジェンダ】\n   - 議論の核となる課題を2〜3点に整理\n2. 【コンサル視点の鋭い問い】\n   - North Star Metricから逆算し、意思決定を加速させるための質問を1つ提示\n\nデータ：\n${fullTranscript}`
                 }]
             }]
         };
@@ -265,9 +242,9 @@
             });
 
             if (!response.ok) {
-                const errorBody = await response.text();
-                console.error("▼ Google APIからのエラー詳細 ▼\n", errorBody);
-                throw new Error(`HTTP ${response.status}`);
+                const err = await response.json();
+                console.error("API Error Detail:", err);
+                throw new Error("API通信エラー");
             }
 
             const data = await response.json();
@@ -281,44 +258,24 @@
             
             const area = document.getElementById('insights-area');
             area.insertBefore(card, area.firstChild);
-            document.getElementById('statusText').innerText = "OCR実行中...";
-
+            document.getElementById('statusText').innerText = "実行中...";
         } catch (e) {
-            console.error("API Error:", e);
             document.getElementById('statusText').innerText = "APIエラー（通信失敗）";
         }
     }
 
     function downloadLog() {
-        let content = "=========================================\n";
-        content += " AI Meeting Partner - 会議ログ\n";
-        content += " ダウンロード日時: " + new Date().toLocaleString() + "\n";
-        content += "=========================================\n\n";
+        let content = "Meeting Log - " + new Date().toLocaleString() + "\n\n";
+        content += "■ 戦略コンサルタントの分析 ■\n\n";
+        const cards = document.querySelectorAll('.insight-card');
+        cards.forEach(c => content += c.dataset.rawText + "\n\n---\n\n");
+        content += "\n■ OCR生データ ■\n\n" + fullTranscript;
 
-        content += "■ 戦略コンサルタントの論点分析 ■\n\n";
-        const cards = document.getElementById('insights-area').getElementsByClassName('insight-card');
-        
-        if (cards.length === 0) {
-            content += "分析結果はまだありません。\n\n";
-        } else {
-            for (let i = 0; i < cards.length; i++) {
-                content += cards[i].dataset.rawText + "\n\n-----------------------------------------\n\n";
-            }
-        }
-
-        content += "\n■ リアルタイム抽出テキスト（OCR生データ） ■\n\n";
-        content += fullTranscript ? fullTranscript : "テキストデータなし";
-
-        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
+        const blob = new Blob([content], { type: 'text/plain' });
         const a = document.createElement('a');
-        a.href = url;
-        const fileNameTime = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        a.download = `Meeting_Log_${fileNameTime}.txt`;
-        document.body.appendChild(a);
+        a.href = URL.createObjectURL(blob);
+        a.download = `Meeting_Log_${new Date().getTime()}.txt`;
         a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
     }
 </script>
 </body>
