@@ -99,6 +99,9 @@
     async function startMeeting() {
         const apiKey = document.getElementById('apiKey').value.trim();
         if (!apiKey) { alert("APIキーを入力してください。"); return; }
+        
+        // 入力欄の見た目上のスペースも綺麗に消しておく（超重要）
+        document.getElementById('apiKey').value = apiKey;
         localStorage.setItem('geminiApiKey', apiKey);
 
         try {
@@ -186,10 +189,12 @@
     async function analyzeConversation() {
         if (fullTranscript.length < 20) return;
 
-        const apiKey = document.getElementById('apiKey').value;
+        // 【修正の要】ここで確実に空白を取り除く（.trim()を追加）
+        const apiKey = document.getElementById('apiKey').value.trim();
         document.getElementById('statusText').innerText = "Gemini分析中...";
         
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+        // モデルは最新で安定している gemini-1.5-flash-latest を指定
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`;
         
         const promptData = {
             contents: [{
@@ -206,8 +211,11 @@
                 body: JSON.stringify(promptData)
             });
 
+            // 【修正の要】エラーだった場合、Googleの生のエラー理由をコンソールに出力する
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                const errorBody = await response.text();
+                console.error("▼ Google APIからのエラー詳細 ▼\n", errorBody);
+                throw new Error(`HTTP ${response.status} - 詳細はコンソールを確認してください`);
             }
 
             const data = await response.json();
@@ -216,7 +224,6 @@
             const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             const card = document.createElement('div');
             card.className = 'insight-card';
-            // ダウンロード時に抽出しやすいように内部テキストを保持
             card.dataset.rawText = `[${time}]\n${text}`; 
             card.innerHTML = `<div class="insight-time">🕒 ${time} 分析実行</div><div>${text.replace(/\n/g, '<br>')}</div>`;
             
@@ -230,7 +237,7 @@
         }
     }
 
-    // 【新規追加】ログをテキストファイルとしてダウンロードする関数
+    // ダウンロード機能
     function downloadLog() {
         let content = "=========================================\n";
         content += " AI Meeting Partner - 会議ログ\n";
@@ -243,7 +250,6 @@
         if (cards.length === 0) {
             content += "分析結果はまだありません。\n\n";
         } else {
-            // 上から順番（新しい順）にテキストを抽出
             for (let i = 0; i < cards.length; i++) {
                 content += cards[i].dataset.rawText + "\n\n-----------------------------------------\n\n";
             }
@@ -252,12 +258,10 @@
         content += "\n■ リアルタイム抽出テキスト（OCR生データ） ■\n\n";
         content += fullTranscript ? fullTranscript : "テキストデータなし";
 
-        // テキストファイルとしてブラウザからダウンロード
         const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        // ファイル名を日時に設定
         const fileNameTime = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         a.download = `Meeting_Log_${fileNameTime}.txt`;
         document.body.appendChild(a);
