@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Meeting Partner - Ultimate Edition</title>
+<title>AI Meeting Partner - Enterprise Edition</title>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
     :root { --primary: #2c3e50; --accent: #8e44ad; --bg: #f4f7f6; --success: #27ae60; --danger: #e74c3c; --info: #2980b9; }
@@ -30,8 +30,10 @@
     
     #timer-display { margin-left: auto; color: var(--accent); font-family: 'Courier New', Courier, monospace; font-size: 1.1em; }
 
-    #preview-container { text-align: center; margin-bottom: 20px; }
+    #preview-container { text-align: center; margin-bottom: 20px; position: relative; }
     #screenVideo { width: 100%; max-height: 220px; background: #000; border-radius: 8px; border: 3px solid #333; }
+    /* OCR領域（下部30%）の視覚的ガイド */
+    .crop-guide { position: absolute; bottom: 3px; left: 3px; right: 3px; height: 30%; border: 2px dashed rgba(46, 204, 113, 0.7); pointer-events: none; border-radius: 0 0 5px 5px; box-sizing: border-box; }
     
     .box-title { font-size: 1.1em; font-weight: bold; margin-bottom: 10px; color: var(--primary); display: flex; align-items: center; gap: 5px; }
     #transcript-area { height: 180px; overflow-y: auto; background: #1e272e; padding: 15px; border-radius: 8px; font-size: 0.9em; line-height: 1.7; color: #ecf0f1; border: 1px solid #34495e; white-space: pre-wrap; margin-bottom: 25px; }
@@ -54,12 +56,11 @@
         <div class="config-group">
             <label>分析間隔:</label>
             <select id="intervalSelect" onchange="resetTimer()">
-                <option value="10">10秒ごと</option>
+                <option value="10">10秒ごと (テスト用)</option>
                 <option value="30">30秒ごと</option>
                 <option value="60" selected>1分ごと</option>
                 <option value="180">3分ごと</option>
                 <option value="300">5分ごと</option>
-                <option value="600">10分ごと</option>
             </select>
         </div>
     </div>
@@ -77,12 +78,13 @@
     </div>
 
     <div id="preview-container">
-        <div class="box-title">🎥 プレビュー (Teams等のウィンドウを選択)</div>
+        <div class="box-title">🎥 プレビュー (緑の枠内が文字読み取り範囲です)</div>
         <video id="screenVideo" autoplay muted></video>
+        <div class="crop-guide"></div>
         <canvas id="captureCanvas" style="display:none;"></canvas>
     </div>
 
-    <div class="box-title">📝 リアルタイム抽出テキスト</div>
+    <div class="box-title">📝 リアルタイム抽出テキスト (新規差分のみ)</div>
     <div id="transcript-area">ここに抽出された字幕テキストが蓄積されます。</div>
 
     <div class="box-title">💡 戦略コンサルタントの論点分析</div>
@@ -90,16 +92,29 @@
 </div>
 
 <script>
+    // --- 1. グローバル変数 ---
+    const GEMINI_MODEL = "gemini-2.5-flash"; // 最新の高速標準モデル
+    
     let worker = null;
-    let screenStream;
+    let screenStream = null;
     let isRecording = false;
-    let fullTranscript = "";
-    let lastOcrText = "";
+    
+    // テキスト管理
+    let fullTranscript = "";     // 全履歴（ダウンロード用）
+    let pendingTranscript = "";  // AIにまだ送っていない新規テキスト
+    let analyzedTranscript = ""; // AIが過去に出した要約の履歴
+    
+    // OCR重複判定用
+    let lastStableText = "";
+    let recentOcrTexts = [];
+    
+    // タイマー類
     let ocrIntervalTimer;
     let countdownTimer;
     let timeRemaining = 0;
     let isProcessingOCR = false;
 
+    // --- 2. 初期化 ---
     window.onload = async () => {
         const savedKey = localStorage.getItem('geminiApiKey');
         if (savedKey) document.getElementById('apiKey').value = savedKey;
@@ -115,6 +130,7 @@
         }
     };
 
+    // --- 3. タイマー管理 ---
     function resetTimer() {
         if (isRecording) {
             timeRemaining = parseInt(document.getElementById('intervalSelect').value);
@@ -130,6 +146,7 @@
         display.innerText = `次の分析まで: ${m}:${s}`;
     }
 
+    // --- 4. 会議の開始と終了 ---
     async function startMeeting() {
         const apiKey = document.getElementById('apiKey').value.trim();
         if (!apiKey) { alert("APIキーを入力してください。"); return; }
@@ -139,8 +156,13 @@
             screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: "always" }, audio: false });
             document.getElementById('screenVideo').srcObject = screenStream;
 
+            // 変数のリセット
             fullTranscript = "";
-            lastOcrText = "";
+            pendingTranscript = "";
+            analyzedTranscript = "";
+            lastStableText = "";
+            recentOcrTexts = [];
+            
             document.getElementById('transcript-area').innerText = "";
             document.getElementById('insights-area').innerHTML = ""; 
             
@@ -150,7 +172,7 @@
             document.getElementById('recIcon').style.opacity = "1";
             document.getElementById('statusText').innerText = "実行中...";
 
-            ocrIntervalTimer = setInterval(captureAndOCR, 5000);
+            ocrIntervalTimer = setInterval(captureAndOCR, 3000); // OCR間隔を3秒に短縮（クロップで軽くなったため）
             
             timeRemaining = parseInt(document.getElementById('intervalSelect').value);
             updateTimerDisplay();
@@ -181,6 +203,75 @@
         updateTimerDisplay();
     }
 
+    // --- 5. OCR改善ロジック（クロップ・正規化・重複排除） ---
+    function drawSubtitleArea(video, canvas, ctx) {
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        // 下部30%だけを切り出す
+        canvas.width = vw;
+        canvas.height = Math.floor(vh * 0.30);
+        const sourceY = Math.floor(vh * 0.70);
+        ctx.drawImage(video, 0, sourceY, vw, canvas.height, 0, 0, vw, canvas.height);
+    }
+
+    function normalizeTextForCompare(text) {
+        return text.replace(/\s+/g, "").replace(/[、。,.，．]/g, "").replace(/[「」『』【】\[\]()（）]/g, "").trim();
+    }
+
+    function cleanTextForDisplay(text) {
+        return text.replace(/\s+/g, " ").replace(/ +/g, " ").trim();
+    }
+
+    function similarity(a, b) {
+        if (!a || !b) return 0;
+        const longer = a.length > b.length ? a : b;
+        const shorter = a.length > b.length ? b : a;
+        if (longer.includes(shorter)) return shorter.length / longer.length;
+
+        let same = 0;
+        const minLen = Math.min(a.length, b.length);
+        for (let i = 0; i < minLen; i++) {
+            if (a[i] === b[i]) same++;
+        }
+        return same / longer.length;
+    }
+
+    function isDuplicateText(newText) {
+        const normalizedNew = normalizeTextForCompare(newText);
+        return recentOcrTexts.some(oldText => {
+            const normalizedOld = normalizeTextForCompare(oldText);
+            return similarity(normalizedNew, normalizedOld) > 0.75;
+        });
+    }
+
+    function rememberOcrText(text) {
+        recentOcrTexts.push(text);
+        if (recentOcrTexts.length > 10) recentOcrTexts.shift();
+    }
+
+    function extractNewPart(previous, current) {
+        const prev = normalizeTextForCompare(previous);
+        const curr = normalizeTextForCompare(current);
+        if (!prev) return current;
+
+        // currentの先頭とpreviousの末尾の重なりを見る
+        let maxOverlap = 0;
+        const maxCheck = Math.min(prev.length, curr.length);
+
+        for (let len = 1; len <= maxCheck; len++) {
+            const prevTail = prev.slice(-len);
+            const currHead = curr.slice(0, len);
+            if (prevTail === currHead) {
+                maxOverlap = len;
+            }
+        }
+
+        if (maxOverlap > 5) return current.slice(maxOverlap).trim();
+        if (similarity(prev, curr) > 0.75) return ""; // かなり似ている場合は追加しない
+        
+        return current;
+    }
+
     async function captureAndOCR() {
         if (isProcessingOCR || !isRecording || !worker) return;
         isProcessingOCR = true;
@@ -188,23 +279,34 @@
         const video = document.getElementById('screenVideo');
         const canvas = document.getElementById('captureCanvas');
         const ctx = canvas.getContext('2d');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // 字幕領域のみOCR
+        drawSubtitleArea(video, canvas, ctx);
 
         try {
             const result = await worker.recognize(canvas);
-            const currentText = result.data.text.replace(/\s+/g, '').trim();
+            const rawText = result.data.text || "";
+            const displayText = cleanTextForDisplay(rawText);
+            const compareText = normalizeTextForCompare(displayText);
 
-            if (currentText.length > 5 && currentText !== lastOcrText) {
-                const head = currentText.substring(0, 15);
-                if (!lastOcrText.includes(head)) {
-                    fullTranscript += currentText + "\n\n";
-                    const area = document.getElementById('transcript-area');
-                    area.innerText = fullTranscript;
-                    area.scrollTop = area.scrollHeight;
-                    lastOcrText = currentText;
-                }
+            if (compareText.length < 8) return;
+
+            // 履歴と似ていればスキップ
+            if (isDuplicateText(displayText)) return;
+
+            // 新規の差分だけ抽出
+            const newPart = extractNewPart(lastStableText, displayText);
+
+            if (normalizeTextForCompare(newPart).length >= 5) {
+                fullTranscript += newPart + "\n";
+                pendingTranscript += newPart + "\n"; // 分析待ちキューに入れる
+
+                const area = document.getElementById('transcript-area');
+                area.innerText = fullTranscript;
+                area.scrollTop = area.scrollHeight;
+
+                lastStableText = displayText;
+                rememberOcrText(displayText);
             }
         } catch (e) {
             console.error("OCR Error:", e);
@@ -213,89 +315,112 @@
         }
     }
 
+    // --- 6. Gemini API 呼び出し（ベストプラクティス版） ---
+    async function callGemini(apiKey, promptText) {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+
+        const payload = {
+            system_instruction: {
+                parts: [{ text: "あなたはトップティアの戦略コンサルタントです。会議内容を構造化し、意思決定に役立つ論点を抽出してください。" }]
+            },
+            contents: [{
+                role: "user",
+                parts: [{ text: promptText }]
+            }],
+            generationConfig: {
+                temperature: 0.3,
+                maxOutputTokens: 1200
+            }
+        };
+
+        const response = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-goog-api-key": apiKey // URL埋め込みではなくヘッダーで渡す（安全かつ公式推奨）
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error?.message || JSON.stringify(data));
+        }
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    }
+
     async function analyzeConversation() {
-        if (fullTranscript.length < 20) return;
+        if (pendingTranscript.length < 15) return; // 新しい発言が少なければスキップ
 
         const apiKey = document.getElementById('apiKey').value.trim();
         document.getElementById('statusText').innerText = "Gemini分析中...";
-        
-        // 【超強力版】複数のAPIエンドポイントを順番に試し、繋がるものを探す
-        const endpoints = [
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-            `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`,
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`
-        ];
-        
-        const promptData = {
-            contents: [{
-                parts: [{
-                    text: `あなたはEYなどのトップティアに所属する戦略コンサルタントです。以下のデータは会議の字幕をOCRで読み取った生データです。議論を構造化して以下の形式で出力してください。\n\n1. 【現状の主要アジェンダ】\n   - 議論の核となる課題を2〜3点に整理\n2. 【コンサル視点の鋭い問い】\n   - North Star Metricから逆算し、意思決定を加速させるための質問を1つ提示\n\nデータ：\n${fullTranscript}`
-                }]
-            }]
-        };
 
-        let success = false;
-        let lastErrorMsg = "";
+        // 増分分析プロンプト（過去の要約 ＋ 新規テキスト）
+        const promptText = `
+以下は前回分析後に新しく取得された会議字幕です。
+誤字・重複・抜けがある前提で、過去の文脈も踏まえて議論の流れを構造化・更新してください。
 
-        // エンドポイントを順番にアタック
-        for (const url of endpoints) {
-            try {
-                const response = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(promptData)
-                });
+【前回までの要約】
+${analyzedTranscript ? analyzedTranscript : "(まだありません。これが最初の分析です)"}
 
-                if (!response.ok) {
-                    const err = await response.json();
-                    lastErrorMsg = err.error ? err.error.message : JSON.stringify(err);
-                    console.warn("API Error with URL:", url, lastErrorMsg);
-                    continue; // 失敗したら次のURLへ
-                }
+【新しく取得された字幕】
+${pendingTranscript}
 
-                const data = await response.json();
-                const text = data.candidates[0].content.parts[0].text;
-                
-                const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                const card = document.createElement('div');
-                card.className = 'insight-card';
-                card.dataset.rawText = `[${time}]\n${text}`; 
-                card.innerHTML = `<div class="insight-time">🕒 ${time} 分析実行</div><div>${text.replace(/\n/g, '<br>')}</div>`;
-                
-                const area = document.getElementById('insights-area');
-                area.insertBefore(card, area.firstChild);
-                document.getElementById('statusText').innerText = "実行中...";
-                success = true;
-                break; // 成功したらループを抜ける
+出力形式：
+1. 【現状の主要アジェンダ】
+   - 2〜3点
+2. 【決まったこと】
+   - 決定事項があれば整理
+3. 【未決論点】
+   - 判断が必要な点を整理
+4. 【コンサル視点の鋭い問い】
+   - 意思決定を前に進める問いを1つ
+`;
 
-            } catch (e) {
-                console.error("Fetch Exception:", e);
-                lastErrorMsg = e.message;
-            }
-        }
+        try {
+            const text = await callGemini(apiKey, promptText);
 
-        // すべてのエンドポイントが失敗した場合、画面にエラー理由を直接表示
-        if (!success) {
+            // 成功したらPendingをクリアし、履歴を更新
+            analyzedTranscript += `\n\n[追加分]\n${text}`;
+            pendingTranscript = ""; 
+            
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const card = document.createElement('div');
+            card.className = 'insight-card';
+            card.dataset.rawText = `[${time}]\n${text}`; 
+            card.innerHTML = `<div class="insight-time">🕒 ${time} 分析実行</div><div>${text.replace(/\n/g, '<br>')}</div>`;
+            
+            const area = document.getElementById('insights-area');
+            area.insertBefore(card, area.firstChild);
+            document.getElementById('statusText').innerText = "実行中...";
+
+        } catch (e) {
+            console.error("API Error:", e);
             document.getElementById('statusText').innerText = "API通信失敗（詳細は画面下部）";
+            
             const errCard = document.createElement('div');
             errCard.style.backgroundColor = "#ffebee";
             errCard.style.color = "#c62828";
             errCard.style.padding = "15px";
             errCard.style.borderRadius = "8px";
             errCard.style.marginBottom = "20px";
-            errCard.innerHTML = `<b>⚠️ Google APIからのエラーメッセージ:</b><br>${lastErrorMsg}<br><br><small>※この画面のスクリーンショットをお知らせください。</small>`;
+            errCard.innerHTML = `<b>⚠️ APIエラー:</b><br>${e.message}`;
             const area = document.getElementById('insights-area');
             area.insertBefore(errCard, area.firstChild);
         }
     }
 
+    // --- 7. ダウンロード ---
     function downloadLog() {
         let content = "Meeting Log - " + new Date().toLocaleString() + "\n\n";
         content += "■ 戦略コンサルタントの分析 ■\n\n";
         const cards = document.querySelectorAll('.insight-card');
-        cards.forEach(c => content += c.dataset.rawText + "\n\n---\n\n");
-        content += "\n■ OCR生データ ■\n\n" + fullTranscript;
+        cards.forEach(c => {
+            // エラーカードは弾く
+            if (c.dataset.rawText) content += c.dataset.rawText + "\n\n---\n\n";
+        });
+        content += "\n■ OCR生データ（全履歴） ■\n\n" + fullTranscript;
 
         const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
         const a = document.createElement('a');
