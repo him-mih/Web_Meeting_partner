@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Meeting Partner - Ultimate Stable Edition</title>
+<title>AI Meeting Partner - Ultimate Edition</title>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
-    :root { --primary: #2c3e50; --accent: #8e44ad; --bg: #f4f7f6; --success: #27ae60; --danger: #e74c3c; }
+    :root { --primary: #2c3e50; --accent: #8e44ad; --bg: #f4f7f6; --success: #27ae60; --danger: #e74c3c; --info: #2980b9; }
     body { font-family: 'Helvetica Neue', Arial, sans-serif; background: var(--bg); color: var(--primary); padding: 15px; margin: 0; }
     .container { max-width: 700px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
     h2 { font-size: 1.5em; border-left: 6px solid var(--accent); padding-left: 12px; margin-top: 0; color: var(--primary); }
@@ -27,6 +27,7 @@
     .status-bar { font-size: 0.95em; margin-bottom: 20px; font-weight: bold; color: #555; display: flex; align-items: center; gap: 8px; padding: 10px; background: #fffbe6; border-radius: 6px; border: 1px solid #ffe58f; }
     .recording-indicator { width: 14px; height: 14px; background: var(--danger); border-radius: 50%; animation: blink 1.2s infinite; opacity: 0; }
     @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+    #countdownText { margin-left: auto; color: var(--accent); font-family: monospace; font-size: 1.1em; }
 
     #preview-container { text-align: center; margin-bottom: 20px; }
     #screenVideo { width: 100%; max-height: 200px; background: #000; border-radius: 8px; border: 3px solid #333; }
@@ -51,10 +52,13 @@
         </div>
         <div class="config-group">
             <label>分析間隔:</label>
-            <select id="intervalSelect">
-                <option value="1" selected>1分ごと</option>
-                <option value="3">3分ごと</option>
-                <option value="5">5分ごと</option>
+            <select id="intervalSelect" onchange="updateInterval()">
+                <option value="10">10秒ごと</option>
+                <option value="30">30秒ごと</option>
+                <option value="60" selected>1分ごと</option>
+                <option value="180">3分ごと</option>
+                <option value="300">5分ごと</option>
+                <option value="600">10分ごと</option>
             </select>
         </div>
     </div>
@@ -67,7 +71,9 @@
 
     <div class="status-bar">
         <div class="recording-indicator" id="recIcon"></div>
-        <span id="statusText">OCRエンジンをダウンロード中...（初回のみ数秒かかります）</span>
+        <span id="statusText">OCRエンジンをダウンロード中...</span>
+        <!-- ここにカウントダウンタイマーが表示されます -->
+        <span id="countdownText"></span>
     </div>
 
     <div id="preview-container">
@@ -89,26 +95,64 @@
     let isRecording = false;
     let fullTranscript = "";
     let lastOcrText = "";
-    let analysisIntervalTimer;
     let ocrIntervalTimer;
     let isProcessingOCR = false;
+    
+    // タイマー管理用変数
+    let countdownTimer = null;
+    let timeRemaining = 0;
 
-    // ページ読み込み時に「常駐型OCRワーカー」を1度だけ作成する（これがフリーズを防ぐカギ）
     window.onload = async () => {
         const savedKey = localStorage.getItem('geminiApiKey');
         if (savedKey) document.getElementById('apiKey').value = savedKey;
 
         try {
             worker = await Tesseract.createWorker('jpn');
-            document.getElementById('statusText').innerText = "待機中 (準備OK・いつでも開始できます)";
+            document.getElementById('statusText').innerText = "待機中 (準備OK)";
             const startBtn = document.getElementById('startBtn');
             startBtn.innerText = "画面キャプチャ開始";
             startBtn.disabled = false;
         } catch (error) {
             console.error("OCRエンジンの起動失敗:", error);
-            document.getElementById('statusText').innerText = "OCRの準備に失敗しました。ページをリロードしてください。";
+            document.getElementById('statusText').innerText = "OCRの準備に失敗しました。リロードしてください。";
         }
     };
+
+    // 途中で分析間隔を変更した時の処理
+    function updateInterval() {
+        if (isRecording) {
+            startAnalysisTimer();
+        }
+    }
+
+    // 分析タイマーの開始（1秒ごとのカウントダウン）
+    function startAnalysisTimer() {
+        clearInterval(countdownTimer);
+        const seconds = parseInt(document.getElementById('intervalSelect').value);
+        timeRemaining = seconds;
+        updateCountdownDisplay();
+
+        countdownTimer = setInterval(() => {
+            timeRemaining--;
+            if (timeRemaining <= 0) {
+                analyzeConversation();
+                // 分析を実行したらタイマーを元に戻す
+                timeRemaining = parseInt(document.getElementById('intervalSelect').value);
+            }
+            updateCountdownDisplay();
+        }, 1000);
+    }
+
+    // タイマーの画面表示更新
+    function updateCountdownDisplay() {
+        if (!isRecording) {
+            document.getElementById('countdownText').innerText = "";
+            return;
+        }
+        const m = Math.floor(timeRemaining / 60).toString().padStart(2, '0');
+        const s = (timeRemaining % 60).toString().padStart(2, '0');
+        document.getElementById('countdownText').innerText = `次回の分析まで: ${m}:${s}`;
+    }
 
     async function startMeeting() {
         const apiKey = document.getElementById('apiKey').value.trim();
@@ -117,7 +161,7 @@
         document.getElementById('apiKey').value = apiKey;
         localStorage.setItem('geminiApiKey', apiKey);
 
-        if (!worker) { alert("OCRエンジンの準備が完了していません。少しお待ちください。"); return; }
+        if (!worker) { alert("OCRエンジンの準備が完了していません。"); return; }
 
         try {
             screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: "always" }, audio: false });
@@ -135,10 +179,11 @@
             document.getElementById('recIcon').style.opacity = "1";
             document.getElementById('statusText').innerText = "OCR実行中...";
 
-            // 5秒ごとに常駐ワーカーに画像を投げる
+            // OCRの実行ループ（5秒ごと）
             ocrIntervalTimer = setInterval(captureAndOCR, 5000);
-            const minutes = parseInt(document.getElementById('intervalSelect').value);
-            analysisIntervalTimer = setInterval(analyzeConversation, minutes * 60 * 1000);
+            
+            // カウントダウンタイマー開始
+            startAnalysisTimer();
 
             screenStream.getVideoTracks()[0].onended = () => stopMeeting();
 
@@ -150,8 +195,9 @@
 
     function stopMeeting() {
         isRecording = false;
-        clearInterval(analysisIntervalTimer);
+        clearInterval(countdownTimer);
         clearInterval(ocrIntervalTimer);
+        updateCountdownDisplay(); // タイマー表示を消す
         if (screenStream) screenStream.getTracks().forEach(t => t.stop());
         document.getElementById('startBtn').style.display = "block";
         document.getElementById('stopBtn').style.display = "none";
@@ -172,19 +218,13 @@
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
         try {
-            // 常駐ワーカーを使うため一瞬で処理が終わります
             const result = await worker.recognize(canvas);
             const currentText = result.data.text.replace(/\s+/g, '').trim();
 
             if (currentText.length > 10) {
-                // 簡易かつ確実な差分チェック
                 if (lastOcrText !== currentText) {
-                    // スクロールせず同じ画面を見ている場合は、先頭の20文字が前回に含まれているかで判定
                     const headToVerify = currentText.substring(0, 20);
-                    if (lastOcrText.includes(headToVerify)) {
-                        // ほぼ同じ画面とみなして無視（重複防止）
-                    } else {
-                        // 画面が切り替わった（スクロールした）と判定し、新テキストを追加
+                    if (!lastOcrText.includes(headToVerify)) {
                         fullTranscript += currentText + "\n\n";
                         const area = document.getElementById('transcript-area');
                         area.innerText = fullTranscript;
@@ -206,7 +246,8 @@
         const apiKey = document.getElementById('apiKey').value.trim();
         document.getElementById('statusText').innerText = "Gemini分析中...";
         
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`;
+        // 【修正完了】存在しないモデル名による404エラーを解消しました
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
         
         const promptData = {
             contents: [{
