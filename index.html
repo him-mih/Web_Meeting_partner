@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Meeting Partner - Ultimate Edition</title>
+<title>AI Meeting Partner - Final Edition (DL機能付き)</title>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
-    :root { --primary: #2c3e50; --accent: #8e44ad; --bg: #f4f7f6; --success: #27ae60; --danger: #e74c3c; }
+    :root { --primary: #2c3e50; --accent: #8e44ad; --bg: #f4f7f6; --success: #27ae60; --danger: #e74c3c; --info: #2980b9; }
     body { font-family: 'Helvetica Neue', Arial, sans-serif; background: var(--bg); color: var(--primary); padding: 15px; margin: 0; }
     .container { max-width: 700px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
     h2 { font-size: 1.5em; border-left: 6px solid var(--accent); padding-left: 12px; margin-top: 0; color: var(--primary); }
@@ -16,10 +16,11 @@
     input[type="password"] { width: 65%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 1em; }
     select { padding: 10px; border-radius: 6px; border: 1px solid #ccc; background: white; cursor: pointer; }
     
-    .controls { display: flex; gap: 12px; margin-bottom: 20px; }
-    button { flex: 1; padding: 18px; font-size: 1.1em; border: none; border-radius: 10px; color: white; cursor: pointer; font-weight: bold; transition: all 0.3s ease; }
-    #startBtn { background: var(--accent); box-shadow: 0 4px 15px rgba(142, 68, 173, 0.3); }
+    .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+    button { flex: 1; min-width: 140px; padding: 15px; font-size: 1em; border: none; border-radius: 8px; color: white; cursor: pointer; font-weight: bold; transition: all 0.2s ease; }
+    #startBtn { background: var(--accent); }
     #stopBtn { background: var(--danger); display: none; }
+    #downloadBtn { background: var(--success); }
     button:hover { opacity: 0.9; transform: translateY(-1px); }
     
     .status-bar { font-size: 0.95em; margin-bottom: 20px; font-weight: bold; color: #555; display: flex; align-items: center; gap: 8px; padding: 10px; background: #fffbe6; border-radius: 6px; border: 1px solid #ffe58f; }
@@ -40,7 +41,7 @@
 <body>
 
 <div class="container">
-    <h2>AI Meeting Partner (完成版)</h2>
+    <h2>AI Meeting Partner</h2>
     
     <div class="config-panel">
         <div class="config-group">
@@ -60,6 +61,7 @@
     <div class="controls">
         <button id="startBtn" onclick="startMeeting()">画面キャプチャ開始</button>
         <button id="stopBtn" onclick="stopMeeting()">会議終了</button>
+        <button id="downloadBtn" onclick="downloadLog()">結果をダウンロード</button>
     </div>
 
     <div class="status-bar">
@@ -68,21 +70,19 @@
     </div>
 
     <div id="preview-container">
-        <div class="box-title">🎥 プレビュー (Teamsウィンドウを選択してください)</div>
+        <div class="box-title">🎥 プレビュー (Teams等のウィンドウを選択)</div>
         <video id="screenVideo" autoplay muted></video>
         <canvas id="captureCanvas" style="display:none;"></canvas>
     </div>
 
     <div class="box-title">📝 リアルタイム抽出テキスト</div>
-    <div id="transcript-area">ここに新しい発言が蓄積されます。
-最初は「メモ帳」などを大きく映してテストしてください。</div>
+    <div id="transcript-area">ここに抽出された字幕テキストが蓄積されます。</div>
 
     <div class="box-title">💡 戦略コンサルタントの論点分析</div>
     <div id="insights-area"></div>
 </div>
 
 <script>
-    // 保存されたキーを復元
     window.onload = () => {
         const savedKey = localStorage.getItem('geminiApiKey');
         if (savedKey) document.getElementById('apiKey').value = savedKey;
@@ -102,12 +102,10 @@
         localStorage.setItem('geminiApiKey', apiKey);
 
         try {
-            // ウィンドウ選択ダイアログを表示
             screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: "always" }, audio: false });
             const video = document.getElementById('screenVideo');
             video.srcObject = screenStream;
 
-            // 初期化
             fullTranscript = "";
             lastOcrText = "";
             document.getElementById('transcript-area').innerText = "";
@@ -119,7 +117,6 @@
             document.getElementById('recIcon').style.opacity = "1";
             document.getElementById('statusText').innerText = "OCR実行中...";
 
-            // 5秒おきにスキャン、設定時間おきにGemini分析
             ocrIntervalTimer = setInterval(captureAndOCR, 5000);
             const minutes = parseInt(document.getElementById('intervalSelect').value);
             analysisIntervalTimer = setInterval(analyzeConversation, minutes * 60 * 1000);
@@ -143,12 +140,9 @@
         document.getElementById('statusText').innerText = "終了しました。";
     }
 
-    // 差分抽出ロジック：前回と違う文字が少しでもあれば採用
     function extractDiff(oldText, newText) {
         if (!newText || newText.length < 3) return "";
         if (oldText.trim() === newText.trim()) return "";
-        
-        // OCR特有の重複を避けるため、新しい文字列が過去の末尾に含まれていなければ採用
         if (oldText.length > 20) {
             const tail = oldText.slice(-15);
             if (newText.includes(tail)) return "";
@@ -178,7 +172,7 @@
                     fullTranscript += diff + " ";
                     const area = document.getElementById('transcript-area');
                     area.innerText = fullTranscript;
-                    area.scrollTop = area.scrollHeight; // 自動スクロール
+                    area.scrollTop = area.scrollHeight; 
                     lastOcrText = currentText;
                 }
             }
@@ -190,32 +184,31 @@
     }
 
     async function analyzeConversation() {
-        if (fullTranscript.length < 20) return; // 文字が少ない時は飛ばす
+        if (fullTranscript.length < 20) return;
 
         const apiKey = document.getElementById('apiKey').value;
         document.getElementById('statusText').innerText = "Gemini分析中...";
         
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
         
-        const prompt = `
-        あなたはEYなどのトップティアに所属する戦略コンサルタントです。
-        以下のテキストは会議の字幕をOCRで読み取った生データです。
-        ノイズを除去し、議論を構造化して以下の形式で出力してください。
-
-        1. 【現状の主要アジェンダ】
-           - 議論の核となる課題を2〜3点に整理
-        2. 【コンサル視点の鋭い問い】
-           - North Star Metricから逆算し、意思決定を加速させるための質問を1つ提示
-
-        データ：
-        ${fullTranscript}`;
+        const promptData = {
+            contents: [{
+                parts: [{
+                    text: `あなたはEYなどのトップティアに所属する戦略コンサルタントです。以下のデータは会議の字幕をOCRで読み取った生データです。ノイズを除去し、議論を構造化して以下の形式で出力してください。\n\n1. 【現状の主要アジェンダ】\n   - 議論の核となる課題を2〜3点に整理\n2. 【コンサル視点の鋭い問い】\n   - North Star Metricから逆算し、意思決定を加速させるための質問を1つ提示\n\nデータ：\n${fullTranscript}`
+                }]
+            }]
+        };
 
         try {
             const response = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                body: JSON.stringify(promptData)
             });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
 
             const data = await response.json();
             const text = data.candidates[0].content.parts[0].text;
@@ -223,6 +216,8 @@
             const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             const card = document.createElement('div');
             card.className = 'insight-card';
+            // ダウンロード時に抽出しやすいように内部テキストを保持
+            card.dataset.rawText = `[${time}]\n${text}`; 
             card.innerHTML = `<div class="insight-time">🕒 ${time} 分析実行</div><div>${text.replace(/\n/g, '<br>')}</div>`;
             
             const area = document.getElementById('insights-area');
@@ -230,9 +225,45 @@
             document.getElementById('statusText').innerText = "OCR実行中...";
 
         } catch (e) {
-            console.error(e);
-            document.getElementById('statusText').innerText = "APIエラー";
+            console.error("API Error:", e);
+            document.getElementById('statusText').innerText = "APIエラー（通信失敗）";
         }
+    }
+
+    // 【新規追加】ログをテキストファイルとしてダウンロードする関数
+    function downloadLog() {
+        let content = "=========================================\n";
+        content += " AI Meeting Partner - 会議ログ\n";
+        content += " ダウンロード日時: " + new Date().toLocaleString() + "\n";
+        content += "=========================================\n\n";
+
+        content += "■ 戦略コンサルタントの論点分析 ■\n\n";
+        const cards = document.getElementById('insights-area').getElementsByClassName('insight-card');
+        
+        if (cards.length === 0) {
+            content += "分析結果はまだありません。\n\n";
+        } else {
+            // 上から順番（新しい順）にテキストを抽出
+            for (let i = 0; i < cards.length; i++) {
+                content += cards[i].dataset.rawText + "\n\n-----------------------------------------\n\n";
+            }
+        }
+
+        content += "\n■ リアルタイム抽出テキスト（OCR生データ） ■\n\n";
+        content += fullTranscript ? fullTranscript : "テキストデータなし";
+
+        // テキストファイルとしてブラウザからダウンロード
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        // ファイル名を日時に設定
+        const fileNameTime = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        a.download = `Meeting_Log_${fileNameTime}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     }
 </script>
 </body>
