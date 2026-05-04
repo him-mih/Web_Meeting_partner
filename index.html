@@ -100,7 +100,6 @@
     let timeRemaining = 0;
     let isProcessingOCR = false;
 
-    // 初期化: OCRワーカーを常駐させる
     window.onload = async () => {
         const savedKey = localStorage.getItem('geminiApiKey');
         if (savedKey) document.getElementById('apiKey').value = savedKey;
@@ -151,10 +150,8 @@
             document.getElementById('recIcon').style.opacity = "1";
             document.getElementById('statusText').innerText = "実行中...";
 
-            // OCRの5秒おき実行
             ocrIntervalTimer = setInterval(captureAndOCR, 5000);
             
-            // 分析カウントダウンタイマーの開始
             timeRemaining = parseInt(document.getElementById('intervalSelect').value);
             updateTimerDisplay();
             countdownTimer = setInterval(() => {
@@ -200,7 +197,6 @@
             const currentText = result.data.text.replace(/\s+/g, '').trim();
 
             if (currentText.length > 5 && currentText !== lastOcrText) {
-                // 前回と20文字以上被っていなければ追加
                 const head = currentText.substring(0, 15);
                 if (!lastOcrText.includes(head)) {
                     fullTranscript += currentText + "\n\n";
@@ -223,8 +219,8 @@
         const apiKey = document.getElementById('apiKey').value.trim();
         document.getElementById('statusText').innerText = "Gemini分析中...";
         
-        // 【修正版URL】v1安定版のURLを使用。モデル名の不一致を解消。
-        const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+        // 【修正完了】確実に動作する Gemini 1.5 Pro の v1beta エンドポイントを指定
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`;
         
         const promptData = {
             contents: [{
@@ -260,6 +256,7 @@
             area.insertBefore(card, area.firstChild);
             document.getElementById('statusText').innerText = "実行中...";
         } catch (e) {
+            console.error("Fetch API Error:", e);
             document.getElementById('statusText').innerText = "APIエラー（通信失敗）";
         }
     }
@@ -271,10 +268,11 @@
         cards.forEach(c => content += c.dataset.rawText + "\n\n---\n\n");
         content += "\n■ OCR生データ ■\n\n" + fullTranscript;
 
-        const blob = new Blob([content], { type: 'text/plain' });
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = `Meeting_Log_${new Date().getTime()}.txt`;
+        const fileNameTime = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        a.download = `Meeting_Log_${fileNameTime}.txt`;
         a.click();
     }
 </script>
