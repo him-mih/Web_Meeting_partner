@@ -172,7 +172,7 @@
             document.getElementById('recIcon').style.opacity = "1";
             document.getElementById('statusText').innerText = "実行中...";
 
-            ocrIntervalTimer = setInterval(captureAndOCR, 3000); // OCR間隔を3秒に短縮（クロップで軽くなったため）
+            ocrIntervalTimer = setInterval(captureAndOCR, 3000); 
             
             timeRemaining = parseInt(document.getElementById('intervalSelect').value);
             updateTimerDisplay();
@@ -267,7 +267,7 @@
         }
 
         if (maxOverlap > 5) return current.slice(maxOverlap).trim();
-        if (similarity(prev, curr) > 0.75) return ""; // かなり似ている場合は追加しない
+        if (similarity(prev, curr) > 0.75) return ""; 
         
         return current;
     }
@@ -280,7 +280,6 @@
         const canvas = document.getElementById('captureCanvas');
         const ctx = canvas.getContext('2d');
 
-        // 字幕領域のみOCR
         drawSubtitleArea(video, canvas, ctx);
 
         try {
@@ -291,15 +290,13 @@
 
             if (compareText.length < 8) return;
 
-            // 履歴と似ていればスキップ
             if (isDuplicateText(displayText)) return;
 
-            // 新規の差分だけ抽出
             const newPart = extractNewPart(lastStableText, displayText);
 
             if (normalizeTextForCompare(newPart).length >= 5) {
                 fullTranscript += newPart + "\n";
-                pendingTranscript += newPart + "\n"; // 分析待ちキューに入れる
+                pendingTranscript += newPart + "\n"; 
 
                 const area = document.getElementById('transcript-area');
                 area.innerText = fullTranscript;
@@ -315,13 +312,15 @@
         }
     }
 
-    // --- 6. Gemini API 呼び出し（ベストプラクティス版） ---
+    // --- 6. Gemini API 呼び出し ---
     async function callGemini(apiKey, promptText) {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
         const payload = {
             system_instruction: {
-                parts: [{ text: "あなたはトップティアの戦略コンサルタントです。会議内容を構造化し、意思決定に役立つ論点を抽出してください。" }]
+                parts: [{ 
+                    text: "あなたはトップティアの戦略コンサルタントです。前置き、挨拶、自己紹介、または「〜として出力します」といった説明テキストは一切出力しないでください。指定された出力フォーマットの項目のみを、直接出力してください。" 
+                }]
             },
             contents: [{
                 role: "user",
@@ -337,7 +336,7 @@
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "x-goog-api-key": apiKey // URL埋め込みではなくヘッダーで渡す（安全かつ公式推奨）
+                "x-goog-api-key": apiKey 
             },
             body: JSON.stringify(payload)
         });
@@ -351,37 +350,32 @@
     }
 
     async function analyzeConversation() {
-        if (pendingTranscript.length < 15) return; // 新しい発言が少なければスキップ
+        if (pendingTranscript.length < 15) return; 
 
         const apiKey = document.getElementById('apiKey').value.trim();
         document.getElementById('statusText').innerText = "Gemini分析中...";
 
-        // 増分分析プロンプト（過去の要約 ＋ 新規テキスト）
+        // 前置きを排除し、必ず2項目出力させる厳格なプロンプト
         const promptText = `
-以下は前回分析後に新しく取得された会議字幕です。
-誤字・重複・抜けがある前提で、過去の文脈も踏まえて議論の流れを構造化・更新してください。
+以下の字幕データを分析してください。
+絶対に前置きや説明を書かず、以下の【出力フォーマット】に完全に一致する形で「要約」と「想定質問」の2点のみを出力してください。
+
+【出力フォーマット】
+1. 【要約（現状の主要アジェンダ）】
+   - 議論の核となる課題や要点を2〜3点に整理
+2. 【コンサル視点の想定質問】
+   - 議論から逆算し、意思決定を加速させるための鋭い問いを1つ提示
 
 【前回までの要約】
-${analyzedTranscript ? analyzedTranscript : "(まだありません。これが最初の分析です)"}
+${analyzedTranscript ? analyzedTranscript : "なし"}
 
-【新しく取得された字幕】
+【新しく取得された字幕データ】
 ${pendingTranscript}
-
-出力形式：
-1. 【現状の主要アジェンダ】
-   - 2〜3点
-2. 【決まったこと】
-   - 決定事項があれば整理
-3. 【未決論点】
-   - 判断が必要な点を整理
-4. 【コンサル視点の鋭い問い】
-   - 意思決定を前に進める問いを1つ
 `;
 
         try {
             const text = await callGemini(apiKey, promptText);
 
-            // 成功したらPendingをクリアし、履歴を更新
             analyzedTranscript += `\n\n[追加分]\n${text}`;
             pendingTranscript = ""; 
             
@@ -417,7 +411,6 @@ ${pendingTranscript}
         content += "■ 戦略コンサルタントの分析 ■\n\n";
         const cards = document.querySelectorAll('.insight-card');
         cards.forEach(c => {
-            // エラーカードは弾く
             if (c.dataset.rawText) content += c.dataset.rawText + "\n\n---\n\n";
         });
         content += "\n■ OCR生データ（全履歴） ■\n\n" + fullTranscript;
