@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Meeting Partner - Final Edition</title>
+<title>AI Meeting Partner - Ultimate Stable Edition</title>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
-    :root { --primary: #2c3e50; --accent: #8e44ad; --bg: #f4f7f6; --success: #27ae60; --danger: #e74c3c; --info: #2980b9; }
+    :root { --primary: #2c3e50; --accent: #8e44ad; --bg: #f4f7f6; --success: #27ae60; --danger: #e74c3c; }
     body { font-family: 'Helvetica Neue', Arial, sans-serif; background: var(--bg); color: var(--primary); padding: 15px; margin: 0; }
     .container { max-width: 700px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
     h2 { font-size: 1.5em; border-left: 6px solid var(--accent); padding-left: 12px; margin-top: 0; color: var(--primary); }
@@ -21,7 +21,8 @@
     #startBtn { background: var(--accent); }
     #stopBtn { background: var(--danger); display: none; }
     #downloadBtn { background: var(--success); }
-    button:hover { opacity: 0.9; transform: translateY(-1px); }
+    button:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
+    button:disabled { background: #95a5a6; cursor: not-allowed; }
     
     .status-bar { font-size: 0.95em; margin-bottom: 20px; font-weight: bold; color: #555; display: flex; align-items: center; gap: 8px; padding: 10px; background: #fffbe6; border-radius: 6px; border: 1px solid #ffe58f; }
     .recording-indicator { width: 14px; height: 14px; background: var(--danger); border-radius: 50%; animation: blink 1.2s infinite; opacity: 0; }
@@ -46,7 +47,6 @@
     <div class="config-panel">
         <div class="config-group">
             <label>API Key:</label>
-            <!-- 貼り付けミス防止のため、自動で空白を消す処理を追加 -->
             <input type="password" id="apiKey" placeholder="AIzaSy..." onchange="this.value = this.value.trim()">
         </div>
         <div class="config-group">
@@ -60,14 +60,14 @@
     </div>
 
     <div class="controls">
-        <button id="startBtn" onclick="startMeeting()">画面キャプチャ開始</button>
+        <button id="startBtn" onclick="startMeeting()" disabled>起動準備中...</button>
         <button id="stopBtn" onclick="stopMeeting()">会議終了</button>
         <button id="downloadBtn" onclick="downloadLog()">結果をダウンロード</button>
     </div>
 
     <div class="status-bar">
         <div class="recording-indicator" id="recIcon"></div>
-        <span id="statusText">待機中 (準備OK)</span>
+        <span id="statusText">OCRエンジンをダウンロード中...（初回のみ数秒かかります）</span>
     </div>
 
     <div id="preview-container">
@@ -84,12 +84,7 @@
 </div>
 
 <script>
-    // 保存されたキーを復元
-    window.onload = () => {
-        const savedKey = localStorage.getItem('geminiApiKey');
-        if (savedKey) document.getElementById('apiKey').value = savedKey;
-    };
-
+    let worker = null;
     let screenStream;
     let isRecording = false;
     let fullTranscript = "";
@@ -98,13 +93,31 @@
     let ocrIntervalTimer;
     let isProcessingOCR = false;
 
+    // ページ読み込み時に「常駐型OCRワーカー」を1度だけ作成する（これがフリーズを防ぐカギ）
+    window.onload = async () => {
+        const savedKey = localStorage.getItem('geminiApiKey');
+        if (savedKey) document.getElementById('apiKey').value = savedKey;
+
+        try {
+            worker = await Tesseract.createWorker('jpn');
+            document.getElementById('statusText').innerText = "待機中 (準備OK・いつでも開始できます)";
+            const startBtn = document.getElementById('startBtn');
+            startBtn.innerText = "画面キャプチャ開始";
+            startBtn.disabled = false;
+        } catch (error) {
+            console.error("OCRエンジンの起動失敗:", error);
+            document.getElementById('statusText').innerText = "OCRの準備に失敗しました。ページをリロードしてください。";
+        }
+    };
+
     async function startMeeting() {
         const apiKey = document.getElementById('apiKey').value.trim();
         if (!apiKey) { alert("APIキーを入力してください。"); return; }
         
-        // 入力欄の見た目上のスペースも綺麗に消しておく
         document.getElementById('apiKey').value = apiKey;
         localStorage.setItem('geminiApiKey', apiKey);
+
+        if (!worker) { alert("OCRエンジンの準備が完了していません。少しお待ちください。"); return; }
 
         try {
             screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: "always" }, audio: false });
@@ -122,6 +135,7 @@
             document.getElementById('recIcon').style.opacity = "1";
             document.getElementById('statusText').innerText = "OCR実行中...";
 
+            // 5秒ごとに常駐ワーカーに画像を投げる
             ocrIntervalTimer = setInterval(captureAndOCR, 5000);
             const minutes = parseInt(document.getElementById('intervalSelect').value);
             analysisIntervalTimer = setInterval(analyzeConversation, minutes * 60 * 1000);
@@ -145,31 +159,8 @@
         document.getElementById('statusText').innerText = "終了しました。";
     }
 
-    // 【修正版】差分抽出ロジック
-    // 古いテキストと新しいテキストの重なりを見つけ、純粋に増えた部分だけを抽出する
-    function extractDiff(oldText, newText) {
-        if (!newText || newText.length < 3) return "";
-        if (oldText.trim() === newText.trim()) return "";
-
-        // 前回のテキストの末尾（最大20文字）を取得
-        const tailLength = Math.min(oldText.length, 20);
-        if (tailLength > 5) {
-            const tail = oldText.slice(-tailLength);
-            // 新しいテキストの中に、前回の末尾が残っているかチェック
-            const overlapIndex = newText.indexOf(tail);
-
-            if (overlapIndex !== -1) {
-                // かぶっている部分が見つかった場合、その「後ろ」にある新しい文字だけを抽出
-                const diff = newText.substring(overlapIndex + tail.length).trim();
-                return diff;
-            }
-        }
-        // かぶっている部分が見つからない（画面が大きく切り替わった）場合は、すべて新テキストとして採用
-        return newText;
-    }
-
     async function captureAndOCR() {
-        if (isProcessingOCR || !isRecording) return;
+        if (isProcessingOCR || !isRecording || !worker) return;
         isProcessingOCR = true;
 
         const video = document.getElementById('screenVideo');
@@ -181,17 +172,25 @@
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
         try {
-            const result = await Tesseract.recognize(canvas, 'jpn');
+            // 常駐ワーカーを使うため一瞬で処理が終わります
+            const result = await worker.recognize(canvas);
             const currentText = result.data.text.replace(/\s+/g, '').trim();
 
-            if (currentText) {
-                const diff = extractDiff(lastOcrText, currentText);
-                if (diff) {
-                    fullTranscript += diff + " ";
-                    const area = document.getElementById('transcript-area');
-                    area.innerText = fullTranscript;
-                    area.scrollTop = area.scrollHeight; 
-                    lastOcrText = currentText;
+            if (currentText.length > 10) {
+                // 簡易かつ確実な差分チェック
+                if (lastOcrText !== currentText) {
+                    // スクロールせず同じ画面を見ている場合は、先頭の20文字が前回に含まれているかで判定
+                    const headToVerify = currentText.substring(0, 20);
+                    if (lastOcrText.includes(headToVerify)) {
+                        // ほぼ同じ画面とみなして無視（重複防止）
+                    } else {
+                        // 画面が切り替わった（スクロールした）と判定し、新テキストを追加
+                        fullTranscript += currentText + "\n\n";
+                        const area = document.getElementById('transcript-area');
+                        area.innerText = fullTranscript;
+                        area.scrollTop = area.scrollHeight; 
+                        lastOcrText = currentText;
+                    }
                 }
             }
         } catch (e) {
@@ -204,17 +203,15 @@
     async function analyzeConversation() {
         if (fullTranscript.length < 20) return;
 
-        // 【404エラー対策】ここで確実に空白を取り除く
         const apiKey = document.getElementById('apiKey').value.trim();
         document.getElementById('statusText').innerText = "Gemini分析中...";
         
-        // モデルは最新で安定している gemini-1.5-flash-latest を指定
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`;
         
         const promptData = {
             contents: [{
                 parts: [{
-                    text: `あなたはEYなどのトップティアに所属する戦略コンサルタントです。以下のデータは会議の字幕をOCRで読み取った生データです。ノイズを除去し、議論を構造化して以下の形式で出力してください。\n\n1. 【現状の主要アジェンダ】\n   - 議論の核となる課題を2〜3点に整理\n2. 【コンサル視点の鋭い問い】\n   - North Star Metricから逆算し、意思決定を加速させるための質問を1つ提示\n\nデータ：\n${fullTranscript}`
+                    text: `あなたはEYなどのトップティアに所属する戦略コンサルタントです。以下のデータは会議の字幕をOCRで読み取った生データです。重複やノイズを除去し、議論を構造化して以下の形式で出力してください。\n\n1. 【現状の主要アジェンダ】\n   - 議論の核となる課題を2〜3点に整理\n2. 【コンサル視点の鋭い問い】\n   - North Star Metricから逆算し、意思決定を加速させるための質問を1つ提示\n\nデータ：\n${fullTranscript}`
                 }]
             }]
         };
@@ -226,11 +223,10 @@
                 body: JSON.stringify(promptData)
             });
 
-            // エラーだった場合、Googleの生のエラー理由をコンソールに出力する
             if (!response.ok) {
                 const errorBody = await response.text();
                 console.error("▼ Google APIからのエラー詳細 ▼\n", errorBody);
-                throw new Error(`HTTP ${response.status} - 詳細はコンソールを確認してください`);
+                throw new Error(`HTTP ${response.status}`);
             }
 
             const data = await response.json();
@@ -252,7 +248,6 @@
         }
     }
 
-    // ダウンロード機能
     function downloadLog() {
         let content = "=========================================\n";
         content += " AI Meeting Partner - 会議ログ\n";
