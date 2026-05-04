@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Meeting Partner - Enterprise Edition</title>
+<title>AI Meeting Partner - Enterprise JSON Edition</title>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
     :root { --primary: #2c3e50; --accent: #8e44ad; --bg: #f4f7f6; --success: #27ae60; --danger: #e74c3c; --info: #2980b9; }
@@ -32,7 +32,6 @@
 
     #preview-container { text-align: center; margin-bottom: 20px; position: relative; }
     #screenVideo { width: 100%; max-height: 220px; background: #000; border-radius: 8px; border: 3px solid #333; }
-    /* OCR領域（下部30%）の視覚的ガイド */
     .crop-guide { position: absolute; bottom: 3px; left: 3px; right: 3px; height: 30%; border: 2px dashed rgba(46, 204, 113, 0.7); pointer-events: none; border-radius: 0 0 5px 5px; box-sizing: border-box; }
     
     .box-title { font-size: 1.1em; font-weight: bold; margin-bottom: 10px; color: var(--primary); display: flex; align-items: center; gap: 5px; }
@@ -40,6 +39,12 @@
     
     .insight-card { background: #fbf5ff; padding: 20px; border-left: 5px solid var(--accent); border-radius: 8px; font-size: 1em; line-height: 1.8; box-shadow: 0 4px 10px rgba(0,0,0,0.05); margin-bottom: 20px; animation: slideIn 0.4s ease-out; }
     .insight-time { font-size: 0.85em; color: #8e44ad; font-weight: bold; margin-bottom: 10px; border-bottom: 1px solid #e8daef; display: inline-block; }
+    
+    .json-section-title { font-weight: bold; color: var(--primary); margin-top: 10px; margin-bottom: 5px; }
+    .json-summary { margin-bottom: 15px; padding-left: 10px; border-left: 3px solid var(--info); }
+    .json-questions { margin: 0; padding-left: 20px; }
+    .json-questions li { margin-bottom: 5px; }
+    
     @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
 </style>
 </head>
@@ -93,22 +98,19 @@
 
 <script>
     // --- 1. グローバル変数 ---
-    const GEMINI_MODEL = "gemini-2.5-flash"; // 最新の高速標準モデル
+    const GEMINI_MODEL = "gemini-2.5-flash"; // Googleの最新・高速標準モデル
     
     let worker = null;
     let screenStream = null;
     let isRecording = false;
     
-    // テキスト管理
-    let fullTranscript = "";     // 全履歴（ダウンロード用）
-    let pendingTranscript = "";  // AIにまだ送っていない新規テキスト
-    let analyzedTranscript = ""; // AIが過去に出した要約の履歴
+    let fullTranscript = "";     
+    let pendingTranscript = "";  
+    let analyzedTranscript = ""; 
     
-    // OCR重複判定用
     let lastStableText = "";
     let recentOcrTexts = [];
     
-    // タイマー類
     let ocrIntervalTimer;
     let countdownTimer;
     let timeRemaining = 0;
@@ -156,7 +158,6 @@
             screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { cursor: "always" }, audio: false });
             document.getElementById('screenVideo').srcObject = screenStream;
 
-            // 変数のリセット
             fullTranscript = "";
             pendingTranscript = "";
             analyzedTranscript = "";
@@ -207,7 +208,6 @@
     function drawSubtitleArea(video, canvas, ctx) {
         const vw = video.videoWidth;
         const vh = video.videoHeight;
-        // 下部30%だけを切り出す
         canvas.width = vw;
         canvas.height = Math.floor(vh * 0.30);
         const sourceY = Math.floor(vh * 0.70);
@@ -254,7 +254,6 @@
         const curr = normalizeTextForCompare(current);
         if (!prev) return current;
 
-        // currentの先頭とpreviousの末尾の重なりを見る
         let maxOverlap = 0;
         const maxCheck = Math.min(prev.length, curr.length);
 
@@ -312,14 +311,14 @@
         }
     }
 
-    // --- 6. Gemini API 呼び出し ---
+    // --- 6. Gemini API 呼び出し（JSON強制モード） ---
     async function callGemini(apiKey, promptText) {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
         const payload = {
             system_instruction: {
                 parts: [{ 
-                    text: "あなたはトップティアの戦略コンサルタントです。前置き、挨拶、自己紹介、または「〜として出力します」といった説明テキストは一切出力しないでください。指定された出力フォーマットの項目のみを、直接出力してください。" 
+                    text: "あなたはトップティアの戦略コンサルタントです。提供されたデータに基づき、現状の要約と、意思決定を加速させる3つの想定質問を生成してください。必ず指定されたJSONフォーマットで回答してください。JSON以外のテキスト（挨拶や説明など）は一切含めないでください。" 
                 }]
             },
             contents: [{
@@ -328,7 +327,8 @@
             }],
             generationConfig: {
                 temperature: 0.3,
-                maxOutputTokens: 1200
+                maxOutputTokens: 1200,
+                responseMimeType: "application/json" // ← これでJSON形式での出力を完全強制します
             }
         };
 
@@ -355,16 +355,19 @@
         const apiKey = document.getElementById('apiKey').value.trim();
         document.getElementById('statusText').innerText = "Gemini分析中...";
 
-        // 前置きを排除し、必ず2項目出力させる厳格なプロンプト
+        // 出力構造をガチガチに固定するプロンプト
         const promptText = `
-以下の字幕データを分析してください。
-絶対に前置きや説明を書かず、以下の【出力フォーマット】に完全に一致する形で「要約」と「想定質問」の2点のみを出力してください。
+以下の字幕データを分析し、必ず以下のJSONフォーマットで出力してください。
 
-【出力フォーマット】
-1. 【要約（現状の主要アジェンダ）】
-   - 議論の核となる課題や要点を2〜3点に整理
-2. 【コンサル視点の想定質問】
-   - 議論から逆算し、意思決定を加速させるための鋭い問いを1つ提示
+【出力JSONフォーマット】
+{
+  "summary": "議論の核となる課題や要点（2〜3文程度でまとめる）",
+  "questions": [
+    "North Star Metricから逆算した鋭い問い1",
+    "具体的なアクションを促す問い2",
+    "リスクや懸念点に対する問い3"
+  ]
+}
 
 【前回までの要約】
 ${analyzedTranscript ? analyzedTranscript : "なし"}
@@ -374,16 +377,45 @@ ${pendingTranscript}
 `;
 
         try {
-            const text = await callGemini(apiKey, promptText);
+            const jsonText = await callGemini(apiKey, promptText);
+            
+            let parsedData;
+            try {
+                parsedData = JSON.parse(jsonText);
+            } catch (parseError) {
+                console.error("JSON Parse Error:", parseError, jsonText);
+                throw new Error("AIが想定外のフォーマットを返しました。");
+            }
 
-            analyzedTranscript += `\n\n[追加分]\n${text}`;
+            // JSONデータから綺麗なHTMLを組み立てる
+            let htmlContent = `<div class="json-section-title">1. 【要約（現状の主要アジェンダ）】</div>`;
+            htmlContent += `<div class="json-summary">${parsedData.summary}</div>`;
+            
+            htmlContent += `<div class="json-section-title">2. 【コンサル視点の想定質問】</div>`;
+            htmlContent += `<ul class="json-questions">`;
+            if (Array.isArray(parsedData.questions)) {
+                parsedData.questions.forEach(q => {
+                    htmlContent += `<li>${q}</li>`;
+                });
+            } else {
+                htmlContent += `<li>${parsedData.questions}</li>`; 
+            }
+            htmlContent += `</ul>`;
+
+            // 履歴更新・ダウンロード用にプレーンテキスト化
+            const plainQuestions = Array.isArray(parsedData.questions) 
+                ? parsedData.questions.map(q => `- ${q}`).join('\n') 
+                : `- ${parsedData.questions}`;
+            const plainText = `【要約】\n${parsedData.summary}\n\n【想定質問】\n${plainQuestions}`;
+            
+            analyzedTranscript += `\n\n[追加分]\n${plainText}`;
             pendingTranscript = ""; 
             
             const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             const card = document.createElement('div');
             card.className = 'insight-card';
-            card.dataset.rawText = `[${time}]\n${text}`; 
-            card.innerHTML = `<div class="insight-time">🕒 ${time} 分析実行</div><div>${text.replace(/\n/g, '<br>')}</div>`;
+            card.dataset.rawText = `[${time}]\n${plainText}`; 
+            card.innerHTML = `<div class="insight-time">🕒 ${time} 分析実行</div><div>${htmlContent}</div>`;
             
             const area = document.getElementById('insights-area');
             area.insertBefore(card, area.firstChild);
@@ -411,7 +443,7 @@ ${pendingTranscript}
         content += "■ 戦略コンサルタントの分析 ■\n\n";
         const cards = document.querySelectorAll('.insight-card');
         cards.forEach(c => {
-            if (c.dataset.rawText) content += c.dataset.rawText + "\n\n---\n\n";
+            if (c.dataset.rawText) content += c.dataset.rawText + "\n\n-----------------------------------------\n\n";
         });
         content += "\n■ OCR生データ（全履歴） ■\n\n" + fullTranscript;
 
