@@ -61,11 +61,10 @@
         <div class="config-group">
             <label>分析間隔:</label>
             <select id="intervalSelect" onchange="resetTimer()">
-                <option value="10">10秒ごと (テスト用)</option>
-                <option value="30">30秒ごと</option>
-                <option value="60" selected>1分ごと</option>
-                <option value="180">3分ごと</option>
+                <option value="60">1分ごと（無料枠では非推奨）</option>
+                <option value="180" selected>3分ごと（推奨）</option>
                 <option value="300">5分ごと</option>
+                <option value="600">10分ごと</option>
             </select>
         </div>
     </div>
@@ -115,6 +114,9 @@
     let countdownTimer;
     let timeRemaining = 0;
     let isProcessingOCR = false;
+    let isAnalyzingGemini = false;
+    let nextGeminiAllowedAt = 0;
+    const MIN_GEMINI_INTERVAL_MS = 70000; // 無料枠の短時間レート制限を避けるため、Gemini呼び出しは最低70秒空ける
 
     // --- 2. 初期化 ---
     window.onload = async () => {
@@ -163,6 +165,8 @@
             analyzedTranscript = "";
             lastStableText = "";
             recentOcrTexts = [];
+            isAnalyzingGemini = false;
+            nextGeminiAllowedAt = 0;
             
             document.getElementById('transcript-area').innerText = "";
             document.getElementById('insights-area').innerHTML = ""; 
@@ -485,6 +489,32 @@
         }[ch]));
     }
 
+    function parseRetryAfterSecondsFromError(data, message) {
+        const retryInfo = data?.error?.details?.find(d => d['@type']?.includes('RetryInfo'));
+        const retryDelay = retryInfo?.retryDelay;
+        if (retryDelay) {
+            const m = String(retryDelay).match(/([0-9.]+)s/);
+            if (m) return Math.ceil(Number(m[1]));
+        }
+        const text = String(message || '');
+        const m2 = text.match(/retry in\s+([0-9.]+)s/i) || text.match(/Please retry in\s+([0-9.]+)s/i);
+        if (m2) return Math.ceil(Number(m2[1]));
+        return 70;
+    }
+
+    function addSystemCard(title, message) {
+        const area = document.getElementById('insights-area');
+        const card = document.createElement('div');
+        card.style.backgroundColor = "#fff8e1";
+        card.style.color = "#6d4c00";
+        card.style.padding = "15px";
+        card.style.borderRadius = "8px";
+        card.style.marginBottom = "20px";
+        card.style.borderLeft = "5px solid #f9a825";
+        card.innerHTML = `<b>${escapeHtml(title)}</b><br>${escapeHtml(message)}`;
+        area.insertBefore(card, area.firstChild);
+    }
+
     async function callGemini(apiKey, promptText) {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
@@ -530,7 +560,10 @@
             if (!response.ok) {
                 console.error("Gemini API raw error:", data);
                 const message = data.error?.message || JSON.stringify(data);
-                throw new Error(message);
+                const err = new Error(message);
+                err.status = response.status;
+                err.retryAfterSec = response.status === 429 ? parseRetryAfterSecondsFromError(data, message) : null;
+                throw err;
             }
 
             const candidate = data.candidates?.[0];
@@ -561,9 +594,19 @@
     }
 
     async function analyzeConversation() {
-        if (pendingTranscript.length < 15) return; 
+        if (pendingTranscript.length < 15) return;
+        if (isAnalyzingGemini) return;
+
+        const now = Date.now();
+        if (now < nextGeminiAllowedAt) {
+            const waitSec = Math.ceil((nextGeminiAllowedAt - now) / 1000);
+            document.getElementById('statusText').innerText = `Gemini API制限中。約${waitSec}秒後に再試行します。`;
+            return;
+        }
 
         const apiKey = document.getElementById('apiKey').value.trim();
+        isAnalyzingGemini = true;
+        nextGeminiAllowedAt = Date.now() + MIN_GEMINI_INTERVAL_MS;
         document.getElementById('statusText').innerText = "Gemini分析中...";
 
         // JSONの形はgenerationConfig.response_schemaで固定するため、プロンプト側にはスキーマを書かない
@@ -626,17 +669,28 @@ ${clipText(pendingTranscript, 3500)}
 
         } catch (e) {
             console.error("API Error:", e);
-            document.getElementById('statusText').innerText = "API通信失敗（詳細は画面下部）";
-            
+
             const errCard = document.createElement('div');
             errCard.style.backgroundColor = "#ffebee";
             errCard.style.color = "#c62828";
             errCard.style.padding = "15px";
             errCard.style.borderRadius = "8px";
             errCard.style.marginBottom = "20px";
-            errCard.innerHTML = `<b>⚠️ APIエラー:</b><br>${e.message}`;
+
+            if (e.status === 429) {
+                const retrySec = e.retryAfterSec || 70;
+                nextGeminiAllowedAt = Date.now() + (retrySec + 10) * 1000;
+                document.getElementById('statusText').innerText = `Gemini API制限中。約${retrySec + 10}秒後に再試行します。`;
+                errCard.innerHTML = `<b>⚠️ API利用制限:</b><br>Gemini APIの無料枠または短時間レート制限に到達しました。${retrySec + 10}秒後以降に自動再試行します。字幕データは保持しています。`;
+            } else {
+                document.getElementById('statusText').innerText = "API通信失敗（詳細は画面下部）";
+                errCard.innerHTML = `<b>⚠️ APIエラー:</b><br>${escapeHtml(e.message)}`;
+            }
+
             const area = document.getElementById('insights-area');
             area.insertBefore(errCard, area.firstChild);
+        } finally {
+            isAnalyzingGemini = false;
         }
     }
 
