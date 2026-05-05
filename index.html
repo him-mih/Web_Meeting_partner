@@ -329,12 +329,35 @@
 
     // --- 6. Gemini API 呼び出し（JSON強制モード） ---
     // GeminiからJSONを安定して受け取るためのスキーマ
-    const ANALYSIS_SCHEMA = {
+    // REST APIへfetchで直接投げる場合は camelCase の generationConfig を使う。
+    // responseJsonSchema は通常のJSON Schemaなので type は小文字。
+    const ANALYSIS_JSON_SCHEMA = {
+        type: "object",
+        properties: {
+            summary: {
+                type: "string",
+                description: "議論の核となる課題や要点。80〜160文字程度。"
+            },
+            questions: {
+                type: "array",
+                description: "意思決定を加速させる想定質問。必ず3件。",
+                minItems: 3,
+                maxItems: 3,
+                items: { type: "string" }
+            }
+        },
+        required: ["summary", "questions"],
+        additionalProperties: false
+    };
+
+    // 一部環境でresponseJsonSchemaが通らない場合の後方互換フォールバック。
+    // responseSchemaはGemini Schema形式なので type は大文字。
+    const ANALYSIS_GEMINI_SCHEMA = {
         type: "OBJECT",
         properties: {
             summary: {
                 type: "STRING",
-                description: "議論の核となる課題や要点。2〜3文程度。"
+                description: "議論の核となる課題や要点。80〜160文字程度。"
             },
             questions: {
                 type: "ARRAY",
@@ -395,46 +418,74 @@
     async function callGemini(apiKey, promptText) {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
-        const payload = {
-            system_instruction: {
-                parts: [{
-                    text: "あなたはトップティアの戦略コンサルタントです。提供された字幕データだけを根拠に、現状の要約と、意思決定を加速させる3つの想定質問を生成してください。"
-                }]
-            },
-            contents: [{
-                role: "user",
-                parts: [{ text: promptText }]
-            }],
-            generationConfig: {
-                temperature: 0.2,
-                max_output_tokens: 800,
-                response_mime_type: "application/json",
-                response_schema: ANALYSIS_SCHEMA
+        function buildPayload(useFallbackSchema = false) {
+            return {
+                system_instruction: {
+                    parts: [{
+                        text: "あなたはトップティアの戦略コンサルタントです。提供された字幕データだけを根拠に、現状の要約と、意思決定を加速させる3つの想定質問を生成してください。必ずJSONのみで返してください。"
+                    }]
+                },
+                contents: [{
+                    role: "user",
+                    parts: [{ text: promptText }]
+                }],
+                generationConfig: useFallbackSchema ? {
+                    temperature: 0.2,
+                    maxOutputTokens: 2048,
+                    responseMimeType: "application/json",
+                    responseSchema: ANALYSIS_GEMINI_SCHEMA
+                } : {
+                    temperature: 0.2,
+                    maxOutputTokens: 2048,
+                    responseMimeType: "application/json",
+                    responseJsonSchema: ANALYSIS_JSON_SCHEMA
+                }
+            };
+        }
+
+        async function requestGemini(payload) {
+            const response = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": apiKey
+                },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                console.error("Gemini API raw error:", data);
+                const message = data.error?.message || JSON.stringify(data);
+                throw new Error(message);
             }
-        };
 
-        const response = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "x-goog-api-key": apiKey
-            },
-            body: JSON.stringify(payload)
-        });
+            const candidate = data.candidates?.[0];
+            if (candidate?.finishReason === "MAX_TOKENS") {
+                console.error("Gemini stopped by MAX_TOKENS:", data);
+                throw new Error("Gemini応答がmaxOutputTokensで途中終了しました。maxOutputTokensを増やすか、入力する字幕量を減らしてください。");
+            }
 
-        const data = await response.json();
-
-        if (!response.ok) {
-            console.error("Gemini API raw error:", data);
-            throw new Error(data.error?.message || JSON.stringify(data));
+            const text = candidate?.content?.parts?.map(p => p.text || "").join("") || "";
+            if (!text.trim()) {
+                console.error("Gemini API empty response:", data);
+                throw new Error("Geminiから空の応答が返りました。safetyRatingsやfinishReasonをConsoleで確認してください。");
+            }
+            return text;
         }
 
-        const text = data.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("") || "";
-        if (!text.trim()) {
-            console.error("Gemini API empty response:", data);
-            throw new Error("Geminiから空の応答が返りました。safetyRatingsやfinishReasonをConsoleで確認してください。");
+        try {
+            return await requestGemini(buildPayload(false));
+        } catch (firstError) {
+            // responseJsonSchema非対応・一部API環境差異の場合だけresponseSchemaで再試行する。
+            const msg = String(firstError.message || firstError);
+            const mayBeSchemaCompatibilityIssue = /responseJsonSchema|response_json_schema|Unknown name|Invalid JSON payload|unsupported|not supported/i.test(msg);
+            if (!mayBeSchemaCompatibilityIssue) throw firstError;
+
+            console.warn("Retry Gemini with responseSchema fallback:", firstError);
+            return await requestGemini(buildPayload(true));
         }
-        return text;
     }
 
     async function analyzeConversation() {
