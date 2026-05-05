@@ -347,7 +347,8 @@
             }
         },
         required: ["summary", "questions"],
-        additionalProperties: false
+        additionalProperties: false,
+        propertyOrdering: ["summary", "questions"]
     };
 
     // 一部環境でresponseJsonSchemaが通らない場合の後方互換フォールバック。
@@ -371,6 +372,50 @@
         propertyOrdering: ["summary", "questions"]
     };
 
+    function extractLooseJsonLikeAnalysis(rawText) {
+        const raw = String(rawText || "").trim();
+        if (!raw) return null;
+
+        const summaryMatch = raw.match(/"summary"\s*:\s*"([\s\S]*?)(?="\s*,\s*"questions"|"\s*}|")/);
+        let summary = summaryMatch ? summaryMatch[1] : "";
+
+        const questionsBlockMatch = raw.match(/"questions"\s*:\s*\[([\s\S]*)/);
+        let questions = [];
+        if (questionsBlockMatch) {
+            const block = questionsBlockMatch[1];
+            const quoteRegex = /"((?:[^"\\]|\\.)*)"/g;
+            let m;
+            while ((m = quoteRegex.exec(block)) !== null) {
+                questions.push(m[1]);
+            }
+        }
+
+        if (!summary) {
+            summary = raw
+                .replace(/[{}\[\]"]/g, " ")
+                .replace(/summary\s*:/i, "")
+                .replace(/questions\s*:/i, "")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 180);
+        }
+
+        summary = summary
+            .replace(/\\n/g, " ")
+            .replace(/\n/g, " ")
+            .replace(/\\"/g, '"')
+            .replace(/\s+/g, " ")
+            .trim();
+
+        questions = questions
+            .map(q => q.replace(/\\n/g, " ").replace(/\n/g, " ").replace(/\\"/g, '"').replace(/\s+/g, " ").trim())
+            .filter(Boolean)
+            .slice(0, 3);
+
+        if (!summary && questions.length === 0) return null;
+        return { summary, questions, repaired: true };
+    }
+
     function parseGeminiJson(jsonText) {
         const raw = (jsonText || "").trim();
         let text = raw
@@ -388,11 +433,18 @@
                 try {
                     return JSON.parse(text.slice(start, end + 1));
                 } catch (secondError) {
-                    console.error("JSON Repair Parse Error:", secondError, text);
+                    console.warn("JSON strict parse failed. Trying loose extraction.", secondError);
                 }
             }
+
+            const loose = extractLooseJsonLikeAnalysis(raw);
+            if (loose) {
+                console.warn("Gemini JSON was broken, but analysis was recovered:", raw);
+                return loose;
+            }
+
             console.error("Raw Gemini text:", raw);
-            throw new Error("GeminiのJSON解析に失敗しました。response_schemaを使っても崩れる場合は、モデル名・APIキー権限・出力トークン上限を確認してください。");
+            throw new Error("GeminiのJSON解析に失敗しました。出力が途中で切れている可能性があります。maxOutputTokens、thinkingBudget、入力字幕量を確認してください。");
         }
     }
 
@@ -400,9 +452,27 @@
         const summary = typeof data?.summary === "string" ? data.summary.trim() : "";
         let questions = Array.isArray(data?.questions) ? data.questions : [];
         questions = questions.map(q => String(q).trim()).filter(Boolean).slice(0, 3);
-        while (questions.length < 3) questions.push("追加で確認すべき論点は何か？");
-        if (!summary) throw new Error("Gemini応答にsummaryがありません。");
+
+        const fallbackQuestions = [
+            "この議論で最も優先して意思決定すべき論点は何か？",
+            "次に具体化すべきアクションと責任者は誰か？",
+            "実行時に最も大きなリスク・前提崩れは何か？"
+        ];
+        while (questions.length < 3) questions.push(fallbackQuestions[questions.length]);
+
+        if (!summary) {
+            return {
+                summary: "Gemini応答のJSONは一部崩れましたが、取得できた情報から論点を復元しました。",
+                questions
+            };
+        }
         return { summary, questions };
+    }
+
+    function clipText(text, maxChars) {
+        const value = String(text || "");
+        if (value.length <= maxChars) return value;
+        return value.slice(-maxChars);
     }
 
     function escapeHtml(value) {
@@ -430,13 +500,15 @@
                     parts: [{ text: promptText }]
                 }],
                 generationConfig: useFallbackSchema ? {
-                    temperature: 0.2,
-                    maxOutputTokens: 2048,
+                    temperature: 0.1,
+                    maxOutputTokens: 4096,
+                    thinkingConfig: { thinkingBudget: 0 },
                     responseMimeType: "application/json",
                     responseSchema: ANALYSIS_GEMINI_SCHEMA
                 } : {
-                    temperature: 0.2,
-                    maxOutputTokens: 2048,
+                    temperature: 0.1,
+                    maxOutputTokens: 4096,
+                    thinkingConfig: { thinkingBudget: 0 },
                     responseMimeType: "application/json",
                     responseJsonSchema: ANALYSIS_JSON_SCHEMA
                 }
@@ -464,7 +536,7 @@
             const candidate = data.candidates?.[0];
             if (candidate?.finishReason === "MAX_TOKENS") {
                 console.error("Gemini stopped by MAX_TOKENS:", data);
-                throw new Error("Gemini応答がmaxOutputTokensで途中終了しました。maxOutputTokensを増やすか、入力する字幕量を減らしてください。");
+                throw new Error("Gemini応答がmaxOutputTokensで途中終了しました。maxOutputTokensを増やすか、入力する字幕量を減らしてください。usageMetadata=" + JSON.stringify(data.usageMetadata || {}));
             }
 
             const text = candidate?.content?.parts?.map(p => p.text || "").join("") || "";
@@ -498,16 +570,23 @@
         const promptText = `
 以下の字幕データを分析してください。
 
+出力条件:
+- summaryは日本語で80〜140文字。改行を入れない。
+- questionsは日本語で3件。各質問は60文字以内。改行を入れない。
+- OCRの誤字が混じる前提で、意味が通る範囲だけを使う。
+- 入力にない情報を断定しない。
+
 観点:
-- 議論の核となる課題や要点を2〜3文で要約する
-- North Star Metric、具体アクション、リスク・懸念の3観点から想定質問を3つ作る
-- OCRの誤字が混じる前提で、意味が通る範囲だけを使う
+- 議論の核となる課題や要点
+- North Star Metricから逆算した問い
+- 具体アクションを促す問い
+- リスクや前提崩れを確認する問い
 
 【前回までの要約】
-${analyzedTranscript ? analyzedTranscript : "なし"}
+${analyzedTranscript ? clipText(analyzedTranscript, 1200) : "なし"}
 
 【新しく取得された字幕データ】
-${pendingTranscript}
+${clipText(pendingTranscript, 3500)}
 `;
 
         try {
